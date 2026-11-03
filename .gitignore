@@ -1,0 +1,7 @@
+# Soubory, které git ignoruje (nenahrají se na GitHub)
+
+# Zkompilovaný Python – vzniká sám při spuštění
+__pycache__/
+
+# Skrytý soubor macOS s nastavením složky ve Finderu
+.DS_Store
