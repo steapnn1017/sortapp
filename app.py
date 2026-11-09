@@ -31,6 +31,17 @@ JAK JE SOUBOR USPOŘÁDANÝ (shora dolů):
                          tlačítka (generuj, porovnej, animuj, export …).
     7. main()          – vytvoří okno a spustí aplikaci.
 
+CESTA DAT APLIKACÍ (co se stane, když uživatel klikne):
+
+    Generovat data / Načíst .txt / Použít (ruční vstup)
+        -> hodnoty se uloží do self.hodnoty (+ jejich typ do self.typ)
+    Porovnat
+        -> vedlejší vlákno pustí každý vybraný algoritmus ze sort.py
+           na KOPII dat, změří čas a výsledky pošle frontou zpět do okna
+    Animovat
+        -> algoritmus ze sort.py zapíše každý svůj krok do seznamu
+           a OknoAnimace ty kroky přehraje jako sloupcový graf
+
 ZÁKLADNÍ POJMY TKINTERU, KTERÉ SE V SOUBORU OPAKUJÍ:
 
   * Widget       – prvek okna (tk.Label = text, tk.Frame = obdélníkový
@@ -46,18 +57,46 @@ ZÁKLADNÍ POJMY TKINTERU, KTERÉ SE V SOUBORU OPAKUJÍ:
                    běží v jedné smyčce (mainloop), takže pravidelné
                    opakování (animace, čtení fronty) se dělá právě přes
                    after(), ne přes nekonečný cyklus, který by okno zamrazil.
+  * config(...)  – změní vlastnost už existujícího widgetu (text, barvu …).
+  * bg / fg      – barva pozadí (background) / barva písma (foreground).
+  * padx / pady  – vnitřní nebo vnější okraj v pixelech; dvojice (a, b)
+                   znamená různý okraj vlevo/vpravo nebo nahoře/dole.
+
+ZÁKLADNÍ POJMY PYTHONU, KTERÉ SE V SOUBORU OPAKUJÍ:
+
+  * class / self – třída je „šablona“ objektu (např. tlačítka). self je
+                   konkrétní objekt, se kterým metoda právě pracuje;
+                   self.neco = proměnná uložená v tom objektu.
+  * __init__     – metoda, která se zavolá při vytvoření objektu
+                   (Tlacitko(...) -> Tlacitko.__init__(...)).
+  * super()      – rodičovská třída; super().__init__(...) nejdřív
+                   postaví „rodiče“ (např. tk.Frame) a pak doplníme své.
+  * slovník {}   – dvojice klíč -> hodnota, např. BARVY["text"].
+  * n-tice ()    – neměnná skupina hodnot, např. ("Geist", 13).
+  * [x for x in …] – „list comprehension“: krátký zápis cyklu, který
+                   vytvoří nový seznam.
+  * lambda       – malá funkce bez jména na jeden řádek, nejčastěji
+                   jako akce tlačítka nebo reakce na událost.
+  * f"…{x}…"     – f-řetězec: do textu se dosadí hodnota proměnné x.
+  * a, b = 1, 2  – rozbalení: více proměnných dostane hodnoty najednou.
 """
+
+# ---------------------------------------------------------------------------
+# Importy – knihovny, které aplikace používá
+# ---------------------------------------------------------------------------
+# Všechny kromě sort jsou součástí standardní knihovny Pythonu, takže se
+# nic nemusí instalovat přes pip (jen Tk na macOS, viz nahoře).
 
 import csv              # zápis výsledků do CSV (Export CSV)
 import datetime         # práce s daty (typ hodnot „Data“)
-import math             # logaritmus pro délku pruhů, kontrola NaN/nekonečna
+import math             # logaritmus pro délku pruhů ve výsledcích (math.log10)
 import queue            # bezpečná fronta zpráv mezi vláknem a oknem
 import random           # generátor náhodných dat (se seedem)
-import re               # regulární výrazy – rozdělení vstupního textu
+import re               # regulární výrazy – rozdělení vstupního textu, rozpoznání typu
 import statistics       # medián z naměřených časů
 import threading        # měření běží ve vedlejším vlákně, aby okno nezamrzlo
 import time             # přesné měření času (perf_counter)
-import tkinter as tk                # základní widgety Tkinteru
+import tkinter as tk                # základní widgety Tkinteru („as tk“ = kratší jméno)
 import tkinter.font as tkfont       # zjištění dostupných písem a šířky znaků
 from tkinter import filedialog, messagebox, ttk   # výběr souboru, chybové okno, „hezčí“ widgety ttk
 
@@ -68,6 +107,9 @@ import sort             # NAŠE algoritmy – bubble_sort, quick_sort … (soubo
 # ---------------------------------------------------------------------------
 # Všechny barvy jsou na jednom místě ve slovníku. Když chceme změnit vzhled,
 # stačí upravit hodnotu tady a změní se všude, kde se BARVY["…"] používá.
+# Barva se zapisuje jako "#RRGGBB" – šestnáctkově podíl červené, zelené
+# a modré (00 = nic, FF = nejvíc). "#FFFFFF" je bílá, "#111111" skoro černá.
+# Jména proměnných VELKÝMI PÍSMENY = konstanty (během běhu se nemění).
 
 BARVY = {
     "bg": "#F7F6F3",          # pozadí okna
@@ -95,12 +137,14 @@ BARVY = {
 # Dvojice (pozadí, text) pro štítky a odznaky.
 # Klíč je „tón“ štítku – např. stitek(..., "ok") použije zelené pozadí
 # a zelený text. Hodnoty jsou názvy barev ze slovníku BARVY.
+# Víc tónů má stejné barvy (slow i err jsou červené), ale v kódu je
+# podle jména hned jasné, CO štítek znamená.
 TONY = {
-    "slow": ("red_bg", "red"), "err": ("red_bg", "red"),
-    "fast": ("green_bg", "green"), "ok": ("green_bg", "green"),
-    "info": ("blue_bg", "blue"), "run": ("blue_bg", "blue"),
-    "warn": ("yellow_bg", "yellow"), "best": ("yellow_bg", "yellow"),
-    "wait": ("sunken", "text3"),
+    "slow": ("red_bg", "red"), "err": ("red_bg", "red"),            # pomalé O(n²) / chyba
+    "fast": ("green_bg", "green"), "ok": ("green_bg", "green"),     # rychlé O(n log n) / ověřeno
+    "info": ("blue_bg", "blue"), "run": ("blue_bg", "blue"),        # stabilní / právě běží
+    "warn": ("yellow_bg", "yellow"), "best": ("yellow_bg", "yellow"),  # nestabilní / nejrychlejší
+    "wait": ("sunken", "text3"),                                    # čeká / zastaveno
 }
 
 PISMO = {}   # naplní se v priprav_pisma(), až existuje okno Tk
@@ -114,24 +158,35 @@ def priprav_pisma(root):
     Každá položka je n-tice (název písma, velikost[, styl]), kterou Tkinter
     přijímá v parametru font=.
     """
+    # tkfont.families(root) vrátí n-tici názvů všech písem v systému.
+    # set() z ní udělá množinu – v množině se dá velmi rychle zjistit,
+    # jestli v ní něco je (operátor `in`).
     dostupna = set(tkfont.families(root))      # všechna písma nainstalovaná v systému
 
     def prvni(*kandidati):
+        # Vnořená funkce – existuje jen uvnitř priprav_pisma a vidí
+        # proměnnou `dostupna` z okolní funkce.
+        # *kandidati = libovolný počet parametrů, uvnitř funkce jsou n-tice
+        # (prvni("A", "B", "C") -> kandidati = ("A", "B", "C")).
         # Vrátí první písmo ze seznamu, které v systému opravdu je.
         # next(...) vezme první prvek z generátoru; když žádný není,
         # použije se náhradní "TkDefaultFont" (výchozí písmo Tkinteru).
         return next((k for k in kandidati if k in dostupna), "TkDefaultFont")
 
+    # Tři rodiny písem. Na každém Macu je aspoň poslední z kandidátů,
+    # Geist / Instrument Serif se použijí, jen když jsou nainstalované.
     sans = prvni("Geist", "Inter", "Helvetica Neue")        # běžný text
     mono = prvni("Geist Mono", "SF Mono", "Menlo")          # čísla, kód (stejně široké znaky)
     serif = prvni("Instrument Serif", "New York", "Georgia")  # velké nadpisy
+    # update() doplní do slovníku PISMO všechny dvojice najednou.
+    # Klíč = role písma v rozhraní, hodnota = (písmo, velikost v bodech[, styl]).
     PISMO.update({
-        "body": (sans, 13), "small": (sans, 12), "tiny": (sans, 11),
-        "bold": (sans, 13, "bold"), "card_title": (sans, 17, "bold"),
-        "brand": (sans, 14, "bold"),
-        "mono": (mono, 12), "mono_small": (mono, 11),
-        "hero": (serif, 40), "hero_italic": (serif, 40, "italic"),
-        "dialog_title": (serif, 30),
+        "body": (sans, 13), "small": (sans, 12), "tiny": (sans, 11),     # běžný / menší / nejmenší text
+        "bold": (sans, 13, "bold"), "card_title": (sans, 17, "bold"),    # tučný text / nadpis karty
+        "brand": (sans, 14, "bold"),                                     # název SortApp v hlavičce
+        "mono": (mono, 12), "mono_small": (mono, 11),                    # hodnoty, časy, pozice
+        "hero": (serif, 40), "hero_italic": (serif, 40, "italic"),       # velký nadpis nahoře
+        "dialog_title": (serif, 30),                                     # nadpis modálních oken
     })
 
 
@@ -145,6 +200,15 @@ def priprav_pisma(root):
 #   "kratce"     – jednořádkový popis na kartě algoritmu
 #   "stitky"     – barevné štítky (text, tón z TONY): složitost a stabilita
 #   "vysvetleni" – delší vysvětlení principu, zobrazí se v okně animace
+#
+# Pojmy ve štítcích:
+#   O(n²)      – čas roste s druhou mocninou počtu prvků (2× víc dat = 4× déle)
+#   O(n log n) – čas roste jen o málo rychleji než počet prvků (rychlé)
+#   stabilní   – stejné hodnoty si zachovají původní vzájemné pořadí
+#   nestabilní – stejné hodnoty se můžou mezi sebou prohodit
+#
+# Dlouhé texty jsou rozdělené na víc řádků: Python řetězce, které stojí
+# hned za sebou ("abc " "def"), automaticky spojí do jednoho ("abc def").
 
 ALGORITMY_INFO = [
     {"klic": "bubble", "nazev": "Bubble sort",
@@ -186,13 +250,18 @@ ALGORITMY_INFO = [
 ]
 # Stejná data jako slovník podle klíče: INFO["quick"] -> popis quick sortu.
 # Hodí se tam, kde máme jen klíč a potřebujeme název nebo vysvětlení.
+# {a["klic"]: a for a in ...} = „dict comprehension“: pro každý popis `a`
+# vytvoří dvojici klíč algoritmu -> celý jeho slovník.
 INFO = {a["klic"]: a for a in ALGORITMY_INFO}
 
+# Limity aplikace (stejná čísla jsou napsaná i v patičce okna)
 MAX_PRVKU = 3000      # víc prvků by pomalé O(n²) algoritmy měřily příliš dlouho
 MAX_ANIMACE = 100     # animace s víc sloupci by byla nečitelná
 
 # Možnosti rozbalovacích seznamů: (vnitřní klíč, text zobrazený uživateli).
 # Program pracuje s klíčem, uživatel vidí český text.
+# Pořadí v seznamu = pořadí v rozbalovacím seznamu; index vybrané
+# položky (cb.current()) pak ukazuje přímo do tohoto seznamu.
 TYPY = [("auto", "Automaticky"), ("integer", "Celá čísla"),
         ("float", "Desetinná čísla"), ("date", "Data (RRRR-MM-DD)")]
 ROZLOZENI = [("random", "Náhodně"), ("ascending", "Vzestupně – nejlepší případ"),
@@ -208,6 +277,12 @@ ROZLOZENI = [("random", "Náhodně"), ("ascending", "Vzestupně – nejlepší p
 # se z čísla vytvoří až při zobrazení.
 # Příklad: 1. 1. 2016 -> 735964, 2. 1. 2016 -> 735965. Pozdější datum má
 # vždy větší číslo, takže seřazení čísel = seřazení dat.
+#
+# Jaký tvar má jedna hodnota v self.hodnoty podle typu:
+#   "integer" – int          např. 42
+#   "float"   – float        např. 3.14
+#   "date"    – int (den)    např. 738960  (= 2024-03-15)
+#   "text"    – n-tice       např. ("c\uffffaj", "Čaj")  (viz text_na_hodnotu)
 
 DATUM_OD = datetime.date(2016, 1, 1).toordinal()   # nejstarší generované datum
 DATUM_DO = datetime.date(2026, 1, 1).toordinal()   # hranice (už se negeneruje)
@@ -220,9 +295,15 @@ def jedna_hodnota(typ, rng):
     vytvoří vždy stejnou posloupnost čísel (měření jde zopakovat).
     """
     if typ == "float":
+        # rng.random() = náhodné desetinné číslo od 0 do 1 (1 už ne).
+        # * 1000 -> 0 až 999.999…, round(…, 2) zaokrouhlí na 2 desetinná místa.
         return round(rng.random() * 1000, 2)       # 0.00 až 999.99
     if typ == "date":
+        # randrange(a, b) = náhodné celé číslo od a do b - 1
+        # -> náhodný den od 1. 1. 2016 do 31. 12. 2025
         return rng.randrange(DATUM_OD, DATUM_DO)   # pořadové číslo dne 2016–2025
+    # Zbývá typ "integer". 1_000_000 je totéž co 1000000 – podtržítka
+    # Python v číslech ignoruje, jsou jen pro lepší čitelnost.
     return rng.randrange(1_000_000)                # celé číslo 0 až 999 999
 
 
@@ -232,13 +313,20 @@ def generuj_hodnoty(typ, pocet, seed, rozlozeni):
     rozlozeni určuje, jak budou data na začátku uspořádaná – tím se dá
     vyzkoušet nejlepší a nejhorší případ jednotlivých algoritmů.
     """
+    # Vlastní generátor náhodných čísel nastavený seedem. Kdo zadá stejný
+    # seed, dostane přesně stejná „náhodná“ data – měření jde zopakovat
+    # a porovnat (na rozdíl od random.randint, který je pokaždé jiný).
     rng = random.Random(seed)
     if rozlozeni == "duplicates":
         # malá zásoba hodnot, ze které se losuje -> hodně opakování
         # (zásoba má pocet // 15 hodnot, ale nejméně 5)
+        # // = celočíselné dělení (1000 // 15 = 66), max(5, …) = aspoň 5.
+        # `_` je jméno proměnné, kterou nepotřebujeme – jen opakujeme N krát.
         zasoba = [jedna_hodnota(typ, rng) for _ in range(max(5, pocet // 15))]
+        # rng.choice(seznam) vybere náhodný prvek ze seznamu
         hodnoty = [rng.choice(zasoba) for _ in range(pocet)]
     else:
+        # Ostatní rozložení začínají jako úplně náhodná data
         hodnoty = [jedna_hodnota(typ, rng) for _ in range(pocet)]
 
     # Přednastavené pořadí jen připravuje vstup (nejlepší / nejhorší případ),
@@ -250,8 +338,11 @@ def generuj_hodnoty(typ, pocet, seed, rozlozeni):
         hodnoty.sort(reverse=True)         # obráceně seřazená data (nejhorší případ)
     elif rozlozeni == "nearly":
         hodnoty.sort()
+        # Seřazená data trochu „rozbijeme“: prohodíme pár náhodných dvojic.
         for _ in range(max(1, pocet // 50)):          # prohodí ~2 % dvojic
-            i, j = rng.randrange(pocet), rng.randrange(pocet)
+            i, j = rng.randrange(pocet), rng.randrange(pocet)   # dvě náhodné pozice
+            # Prohození v Pythonu bez pomocné proměnné: pravá strana se
+            # vyhodnotí celá najednou, pak se teprve přiřadí doleva.
             hodnoty[i], hodnoty[j] = hodnoty[j], hodnoty[i]
     return hodnoty
 
@@ -259,6 +350,11 @@ def generuj_hodnoty(typ, pocet, seed, rozlozeni):
 # Vzory (regulární výrazy), podle kterých se pozná typ jedné hodnoty.
 # [0-9] = jedna číslice, + = jednou nebo víckrát, * = nula nebo víckrát,
 # ? = nepovinné, [+-] = znaménko, [.,] = desetinná tečka nebo česká čárka.
+# {4} = přesně čtyřikrát. re.compile() vzor jednou „přeloží“, aby se pak
+# dal rychle použít na tisíce hodnot. r"…" = „raw“ řetězec – zpětné
+# lomítko v něm Python nemění, regulární výraz ho dostane tak, jak je.
+# Vzory se používají s fullmatch(): hodnota musí vzoru odpovídat CELÁ,
+# ne jen její část (např. "12abc" celému číslu neodpovídá).
 CELE_CISLO = re.compile(r"[+-]?[0-9]+")                  # 42, -7, +3
 DESETINNE_CISLO = re.compile(r"[+-]?[0-9]*[.,]?[0-9]+")  # 3.14, -0,5, .5 (i celé číslo)
 DATUM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")        # 2024-03-15
@@ -272,14 +368,21 @@ PROC_TYP = {
 }
 
 # Text se řadí podle české abecedy: č je až za c, ř za r, š za s, ž za z.
-# Znak "￿" je větší než všechna písmena, takže "c￿" (= č) se
+# Znak "\uffff" je větší než všechna písmena, takže "c\uffff" (= č) se
 # zařadí za všechna slova na c, ale pořád před d. Čárky a kroužky
 # (á, é, ů …) pořadí nemění – á se řadí jako a. Spřežku ch pro
 # jednoduchost řadíme jako c + h.
+#
+# Proč to vůbec řešíme: Python porovnává texty podle čísel znaků
+# v Unicode. „č“ má číslo 269, „z“ jen 122 – bez úpravy by tedy
+# „čaj“ skončil až za „zebra“ a velká písmena by byla před malými.
+#
+# str.maketrans({...}) vytvoří převodní tabulku znak -> náhrada,
+# kterou pak použije metoda translate() (viz text_na_hodnotu).
 CESKA_ABECEDA = str.maketrans({
-    "á": "a", "č": "c￿", "ď": "d", "é": "e", "ě": "e", "í": "i", "ň": "n",
-    "ó": "o", "ř": "r￿", "š": "s￿", "ť": "t", "ú": "u", "ů": "u",
-    "ý": "y", "ž": "z￿",
+    "á": "a", "č": "c\uffff", "ď": "d", "é": "e", "ě": "e", "í": "i", "ň": "n",
+    "ó": "o", "ř": "r\uffff", "š": "s\uffff", "ť": "t", "ú": "u", "ů": "u",
+    "ý": "y", "ž": "z\uffff",
 })
 
 
@@ -292,7 +395,11 @@ def text_na_hodnotu(t):
     sebe a "čaj" je až za "cukr". Při stejném klíči rozhodne původní text.
     Zobrazuje se vždy jen původní text (druhý prvek dvojice).
     """
-    return (t.casefold().translate(CESKA_ABECEDA), t)   # "Čaj" -> ("c￿aj", "Čaj")
+    # casefold() = převod na malá písmena (důkladnější než lower()),
+    # translate(CESKA_ABECEDA) pak nahradí písmena s diakritikou podle
+    # tabulky výše. Algoritmy v sort.py se díky tomu nemusí měnit:
+    # porovnávají dvojice operátory < a > úplně stejně jako čísla.
+    return (t.casefold().translate(CESKA_ABECEDA), t)   # "Čaj" -> ("c\uffffaj", "Čaj")
 
 
 def rozpoznej_hodnoty(text):
@@ -310,19 +417,29 @@ def rozpoznej_hodnoty(text):
     Text jen středníkem nebo novým řádkem, protože i jedna hodnota
     může obsahovat mezeru (např. „Jan Novák“).
     """
+    # KROK 1: rozdělit text na jednotlivé kousky („tokeny“).
     # [\s;]+ = jedna nebo víc mezer/tabulátorů/nových řádků nebo středníků.
     # Podmínka `if t` vyhodí prázdné řetězce (např. na začátku textu).
+    # Příklad: "42  7;\n15" -> ["42", "7", "15"]
     tokeny = [t for t in re.split(r"[\s;]+", text) if t]
     if not tokeny:
+        # Prázdný soubor / pole. raise = „vyhodit“ chybu; volající ji
+        # zachytí přes try/except a zprávu ukáže uživateli.
         raise ValueError("Nebyly nalezeny žádné hodnoty.")
 
+    # KROK 2: postupně zkoušíme typy od nejpřísnějšího. all(...) vrátí True,
+    # jen když podmínka platí pro VŠECHNY tokeny (stačí jeden jiný -> False).
+    # Pořadí je důležité: každé celé číslo projde i vzorem pro desetinné
+    # číslo, proto se celá čísla musí zkusit dřív.
     upozorneni = ""
     if all(DATUM.fullmatch(t) for t in tokeny):
         try:
             # Data ukládáme jako pořadové číslo dne (viz začátek této části)
+            # fromisoformat("2024-03-15") vytvoří datum, toordinal() z něj číslo.
             typ, hodnoty = "date", [datetime.date.fromisoformat(t).toordinal() for t in tokeny]
         except ValueError:
             # tvar sedí, ale datum neexistuje (např. 2024-02-31)
+            # `from None` skryje původní anglickou chybu – uživatel uvidí jen naši.
             raise ValueError("Vstup obsahuje neplatné datum.") from None
     elif all(CELE_CISLO.fullmatch(t) for t in tokeny):
         typ, hodnoty = "integer", [int(t) for t in tokeny]                      # "42" -> 42
@@ -330,24 +447,34 @@ def rozpoznej_hodnoty(text):
         # float() zná jen desetinnou tečku, českou čárku proto nejdřív nahradíme
         typ, hodnoty = "float", [float(t.replace(",", ".")) for t in tokeny]    # "3,5" -> 3.5
     else:
+        # KROK 3: nic z toho nesedí na všechno -> je to text.
         typ = "text"
+        # Text znovu rozdělíme, tentokrát JEN podle nových řádků a středníků
+        # (mezera uvnitř hodnoty zůstane: "Jan Novák" je jedna hodnota).
         # [\n;] = nový řádek nebo středník; strip() ořízne mezery na krajích
         hodnoty = [text_na_hodnotu(t.strip()) for t in re.split(r"[\n;]", text) if t.strip()]
         # Jsou-li mezi hodnotami i čísla nebo data, uživatele upozorníme:
         # text se řadí znak po znaku, takže čísla vyjdou jinak, než čeká.
+        # any(...) = True, když podmínka platí aspoň pro JEDEN token.
         if any(DESETINNE_CISLO.fullmatch(t) or DATUM.fullmatch(t) for t in tokeny):
             upozorneni = ("Mezi hodnotami jsou čísla nebo data i text. Vše se proto bude "
                           "řadit jako text, znak po znaku – např. 10 bude před 9.")
+    # KROK 4: hlídání limitu – víc hodnot by pomalé algoritmy měřily moc dlouho.
     if len(hodnoty) > MAX_PRVKU:
         raise ValueError(f"Hodnot je {cesky_pocet(len(hodnoty))}, maximum je 3 000.")
+    # Funkce vrací tři hodnoty najednou (n-tici); volající je rozbalí:
+    # typ, hodnoty, upozorneni = rozpoznej_hodnoty(text)
     return typ, hodnoty, upozorneni
 
 
 def formatuj_hodnotu(v, typ):
     """Převede uloženou hodnotu na text pro zobrazení v okně."""
     if typ == "date":
+        # fromordinal() převede pořadové číslo dne zpět na datum,
+        # isoformat() ho vypíše ve tvaru RRRR-MM-DD.
         return datetime.date.fromordinal(v).isoformat()   # 735964 -> "2016-01-01"
     if typ == "text":
+        # v[1] = druhý prvek dvojice (indexy se v Pythonu počítají od 0)
         return v[1]                                        # (klíč, "Čaj") -> "Čaj"
     # Čísla: str() vypíše přesně to, co je uložené (12.125 -> "12.125"),
     # takže uživatel při kontrole souboru vidí všechna desetinná místa.
@@ -360,17 +487,25 @@ def formatuj_ms(v):
     0.4567 -> "0,46 ms", 45.67 -> "45,7 ms", 456.7 -> "457 ms".
     Desetinná tečka se mění na českou čárku.
     """
+    # Podmíněný výraz „a if podmínka else b“ zřetězený dvakrát:
+    # pod 10 ms dvě desetinná místa, pod 100 ms jedno, jinak žádné.
+    # {v:.2f} = číslo v se 2 desetinnými místy.
     text = f"{v:.2f}" if v < 10 else f"{v:.1f}" if v < 100 else f"{v:.0f}"
     return text.replace(".", ",") + " ms"
 
 
 def cesky_pocet(n):
     """Číslo s mezerou mezi tisíci, jak se píše česky: 3000 -> "3 000"."""
-    return f"{n:,}".replace(",", " ")      # 3 000 s pevnou mezerou (nezalomí se na konci řádku)
+    # {n:,} vloží čárky mezi tisíce ("3,000"), replace je vymění za
+    # pevnou mezeru "\u00a0" (nezlomitelná – číslo se nerozdělí na dva řádky;
+    # zapsaná kódem, protože v editoru by vypadala jako obyčejná mezera).
+    return f"{n:,}".replace(",", "\u00a0")   # 3 000 s pevnou mezerou
 
 
 def popis_typu(typ):
     """Krátký český popis typu dat pro informační čip."""
+    # slovník.get(klíč, výchozí) – když klíč ve slovníku není (typ
+    # "integer"), vrátí výchozí hodnotu "celá čísla" místo chyby.
     return {"date": "data", "float": "desetinná čísla", "text": "text"}.get(typ, "celá čísla")
 
 
@@ -379,6 +514,17 @@ def popis_typu(typ):
 # ---------------------------------------------------------------------------
 # Tkinter má jen základní widgety a na macOS je nejde dobře obarvit.
 # Proto si tu skládáme vlastní prvky z jednodušších (Frame + Label + Canvas).
+#
+# Přehled:
+#   zaobleny_obdelnik – kreslení zaobleného obdélníku na plátno
+#   animuj            – plynulá animace (pruhy ve výsledcích)
+#   stitek, cip       – malé barevné / šedé popisky
+#   Tlacitko          – tlačítko se třemi vzhledy, ovladatelné i klávesnicí
+#   Karta             – bílá karta 01 / 02 / 03 s nadpisem
+#   AlgoKarta         – zaškrtávací karta jednoho algoritmu
+#   Zalozky           – přepínač Časy / Vstup / Seřazeno
+#   SeznamHodnot      – mřížka hodnot s pozicemi
+#   Posuvnik          – vlastní posuvník (krok animace, rychlost)
 
 def zaobleny_obdelnik(canvas, x1, y1, x2, y2, r, **kw):
     """Nakreslí na plátno obdélník se zaoblenými rohy.
@@ -388,8 +534,14 @@ def zaobleny_obdelnik(canvas, x1, y1, x2, y2, r, **kw):
     pak hrany proloží křivkou a rohy se zakulatí. r je poloměr rohu.
     **kw předá další parametry (fill = výplň, outline = obrys).
     """
+    # (x1, y1) = levý horní roh, (x2, y2) = pravý dolní roh.
+    # Body jdou po obvodu ve směru hodinových ručiček a každý roh má tři
+    # body (kousek před rohem, roh, kousek za rohem) – z nich smooth=True
+    # udělá oblouk. Seznam je plochý: x, y, x, y, … (Tkinter to tak chce).
     body = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
             x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    # create_polygon vrátí číslo (id) nakresleného tvaru – dá se pak měnit
+    # nebo mazat; **kw „rozbalí“ slovník zpět na pojmenované parametry.
     return canvas.create_polygon(body, smooth=True, **kw)
 
 
@@ -401,16 +553,24 @@ def animuj(widget, trvani_ms, krok):
     překreslí – např. prodlouží pruh v tabulce výsledků.
     Ease-out = pohyb začne rychle a na konci zpomalí, působí přirozeněji.
     """
+    # perf_counter() = přesné hodiny v sekundách (desetinné číslo).
+    # Zapamatujeme si okamžik startu animace.
     start = time.perf_counter()
 
     def tik():
+        # Jeden snímek animace. Funkce se sama znovu naplánuje přes after(),
+        # dokud animace neskončí – tak okno mezi snímky dál reaguje.
         if not widget.winfo_exists():       # widget mezitím zmizel -> konec
             return
+        # Uplynulý čas v ms / délka animace = postup od 0 do 1.
+        # min(1.0, …) zajistí, že t nikdy nepřeleze 1 (poslední snímek je přesně cíl).
         t = min(1.0, (time.perf_counter() - start) * 1000 / trvani_ms)
+        # 1 - (1 - t)³: na začátku roste rychle, ke konci pomalu dojíždí.
+        # Např. t = 0.5 (polovina času) -> 0.875 (už 87,5 % dráhy).
         krok(1 - (1 - t) ** 3)           # ease-out cubic
         if t < 1:
             widget.after(16, tik)           # naplánuje další snímek
-    tik()
+    tik()                               # první snímek hned teď
 
 
 def stitek(rodic, text, ton, pismo="tiny"):
@@ -418,13 +578,17 @@ def stitek(rodic, text, ton, pismo="tiny"):
 
     ton je klíč ze slovníku TONY a určuje barvu pozadí i textu.
     """
+    # TONY[ton] je dvojice názvů barev, rozbalíme ji do dvou proměnných
     bg, fg = TONY[ton]
+    # Label = text v okně. Funkce ho jen vytvoří a vrátí – umístit ho
+    # (pack/grid) musí volající, protože jen on ví, kam patří.
     return tk.Label(rodic, text=text, bg=BARVY[bg], fg=BARVY[fg],
                     font=PISMO[pismo], padx=7, pady=1)
 
 
 def cip(rodic, text):
     """Neutrální informační čip (počet hodnot, typ, zdroj …)."""
+    # Stejný princip jako stitek(), jen vždy šedý a o něco větší
     return tk.Label(rodic, text=text, bg=BARVY["sunken"], fg=BARVY["text2"],
                     font=PISMO["small"], padx=9, pady=3)
 
@@ -443,6 +607,12 @@ class Tlacitko(tk.Frame):
     """
 
     def __init__(self, rodic, text, prikaz, varianta="secondary", padx=16, pady=7):
+        # Parametry:
+        #   rodic    – widget, do kterého tlačítko patří
+        #   text     – popisek tlačítka
+        #   prikaz   – funkce, která se zavolá po kliknutí (bez závorek!)
+        #   varianta – vzhled (viz docstring), výchozí "secondary"
+        #   padx/pady – vnitřní okraj kolem textu = velikost tlačítka
         super().__init__(rodic, takefocus=1)     # takefocus=1 -> jde na něj skočit Tabem
         self.prikaz = prikaz          # funkce, která se zavolá po kliknutí
         self.varianta = varianta
@@ -454,6 +624,7 @@ class Tlacitko(tk.Frame):
         #   bg/fg = pozadí/text, hover = pozadí pod myší, ram = barva rámečku,
         #   off_… = barvy vypnutého tlačítka.
         # Na konci [varianta] vybere jen tu sadu, kterou tlačítko potřebuje.
+        # dict(bg=…, fg=…) je jiný zápis slovníku {"bg": …, "fg": …}.
         self.barvy = {
             "primary": dict(bg=BARVY["ink"], fg="#FFFFFF", hover=BARVY["ink_hover"],
                             ram=BARVY["ink"], off_bg=BARVY["ink_disabled"], off_fg="#FFFFFF",
@@ -464,38 +635,47 @@ class Tlacitko(tk.Frame):
             "ghost": dict(bg=pozadi, fg=BARVY["text2"], hover=BARVY["sunken"], ram=pozadi,
                           off_bg=pozadi, off_fg=BARVY["border_strong"], off_ram=pozadi),
         }[varianta]
+        # Popisek uvnitř rámečku. Primární (černé) tlačítko má tučné písmo.
         self.lbl = tk.Label(self, text=text, padx=padx, pady=pady,
                             font=PISMO["bold" if varianta == "primary" else "body"])
         self.lbl.pack(padx=1, pady=1)          # 1 px okolo = rámeček
         # Události myši navážeme na Frame i na Label, protože kurzor může
         # být nad kterýmkoli z nich.
+        # lambda e: … = malá funkce, která dostane událost e (tu nepotřebujeme)
+        # a zavolá naši metodu s True / False.
         for w in (self, self.lbl):
             w.bind("<Enter>", lambda e: self._mys(True))      # kurzor vjel dovnitř
             w.bind("<Leave>", lambda e: self._mys(False))     # kurzor odjel
             w.bind("<ButtonRelease-1>", self._klik)           # puštění levého tlačítka myši
+        # Klávesy fungují jen tehdy, když má tlačítko fokus (vybrané Tabem)
         self.bind("<Return>", self._klavesa)                  # Enter
         self.bind("<space>", self._klavesa)                   # mezerník
-        self.bind("<FocusIn>", lambda e: self._zmena_fokusu(True))
-        self.bind("<FocusOut>", lambda e: self._zmena_fokusu(False))
-        self._prekresli()
+        self.bind("<FocusIn>", lambda e: self._zmena_fokusu(True))    # tlačítko dostalo fokus
+        self.bind("<FocusOut>", lambda e: self._zmena_fokusu(False))  # tlačítko fokus ztratilo
+        self._prekresli()                                     # první obarvení
 
     def _prekresli(self):
         """Nastaví barvy podle aktuálního stavu (povoleno, pod myší, fokus)."""
-        b = self.barvy
+        b = self.barvy                # kratší jméno, ať jsou řádky čitelnější
         if self.povoleno:
+            # Pod myší světlejší/tmavší pozadí, jinak běžné
             bg = b["hover"] if self.pod_mysi else b["bg"]
             ram = BARVY["focus"] if self.fokus else b["ram"]   # modrý rámeček při fokusu
+            # cursor="pointinghand" = kurzor ve tvaru ruky (jako u odkazu)
             self.lbl.config(bg=bg, fg=b["fg"], cursor="pointinghand")
         else:
+            # Vypnuté tlačítko: vybledlé barvy a obyčejná šipka
             ram = b["off_ram"]
             self.lbl.config(bg=b["off_bg"], fg=b["off_fg"], cursor="arrow")
         self.config(bg=ram)          # barva Framu = barva rámečku
 
     def _mys(self, uvnitr):
+        # Volá se při najetí (True) a odjetí (False) myši – uloží stav a překreslí
         self.pod_mysi = uvnitr
         self._prekresli()
 
     def _zmena_fokusu(self, ma_fokus):
+        # Volá se, když tlačítko získá / ztratí fokus klávesnice
         self.fokus = ma_fokus
         self._prekresli()
 
@@ -503,18 +683,23 @@ class Tlacitko(tk.Frame):
         # akce jen když uživatel tlačítko pustí nad ním (jako u nativních tlačítek)
         # e.x_root/e.y_root = poloha myši na obrazovce; odečteme polohu
         # tlačítka a zjistíme, jestli je myš pořád uvnitř jeho obdélníku.
+        # (Kdo stiskne tlačítko a myš odtáhne pryč, akci tím zruší.)
         x = e.x_root - self.winfo_rootx()
         y = e.y_root - self.winfo_rooty()
+        # 0 <= x < šířka: Python umí řetězit porovnání jako v matematice
         if self.povoleno and 0 <= x < self.winfo_width() and 0 <= y < self.winfo_height():
-            self.prikaz()
+            self.prikaz()             # zavolá funkci předanou při vytvoření tlačítka
 
     def _klavesa(self, e):
+        # Enter nebo mezerník na tlačítku s fokusem = stejné jako klik
         if self.povoleno:
             self.prikaz()
         return "break"          # mezerník už nepropadne do zkratek okna
 
     def nastav(self, povoleno=None, text=None):
         """Zapne/vypne tlačítko nebo změní jeho text (None = neměnit)."""
+        # `is not None` – parametr byl opravdu zadán (False je platná hodnota,
+        # proto nestačí jen `if povoleno:`)
         if povoleno is not None:
             self.povoleno = povoleno
             self.config(takefocus=1 if povoleno else 0)   # vypnuté se Tabem přeskočí
@@ -532,17 +717,26 @@ class Karta(tk.Frame):
     """
 
     def __init__(self, rodic, cislo, nadpis, popis):
+        # Karta JE Frame (dědí z tk.Frame), takže se dá umístit jako
+        # každý jiný widget: Karta(...).grid(...)
         # highlightthickness=1 + highlightbackground = tenký šedý rámeček karty
         super().__init__(rodic, bg=BARVY["surface"], highlightthickness=1,
                          highlightbackground=BARVY["border"])
+        # Vnitřní Frame s okraji 24/22 px – do něj se skládá veškerý obsah.
+        # fill="both" + expand=True = roztáhne se do celé karty.
         self.obsah = tk.Frame(self, bg=BARVY["surface"])
         self.obsah.pack(fill="both", expand=True, padx=24, pady=22)
+        # Hlavička: řádek s číslem a nadpisem (fill="x" = přes celou šířku)
         self.hlavicka = tk.Frame(self.obsah, bg=BARVY["surface"])
         self.hlavicka.pack(fill="x")
+        # Číslo kroku („01“) šedě a menším pevně širokým písmem
         tk.Label(self.hlavicka, text=cislo, font=PISMO["mono_small"], fg=BARVY["text3"],
                  bg=BARVY["surface"]).pack(side="left", padx=(0, 10))
+        # Nadpis karty („Data“) hned vedle čísla
         tk.Label(self.hlavicka, text=nadpis, font=PISMO["card_title"], fg=BARVY["text"],
                  bg=BARVY["surface"]).pack(side="left")
+        # Popis pod nadpisem. anchor="w" = zarovnat doleva („west“),
+        # justify="left" = víc řádků textu také zarovnat doleva.
         self.popis = tk.Label(self.obsah, text=popis, font=PISMO["body"], fg=BARVY["text2"],
                               bg=BARVY["surface"], anchor="w", justify="left")
         self.popis.pack(fill="x", pady=(4, 16))
@@ -558,12 +752,14 @@ class AlgoKarta(tk.Frame):
     """
 
     def __init__(self, rodic, info, pri_zmene):
+        # info = jeden slovník z ALGORITMY_INFO (název, popis, štítky …)
+        # highlightcolor = barva rámečku, když má karta fokus klávesnice (Tab)
         super().__init__(rodic, bg=BARVY["surface"], highlightthickness=1,
                          highlightbackground=BARVY["border"], cursor="pointinghand",
                          takefocus=1, highlightcolor=BARVY["focus"])
         self.klic = info["klic"]      # např. "bubble" – podle něj se volá sort.ALGORITMY
-        self.vybrano = False
-        self.pri_zmene = pri_zmene
+        self.vybrano = False          # na začátku není vybraná
+        self.pri_zmene = pri_zmene    # funkce hlavního okna (obnoví tlačítka)
         vnitrek = tk.Frame(self, bg=BARVY["surface"])
         vnitrek.pack(fill="both", expand=True, padx=14, pady=12)
 
@@ -573,10 +769,12 @@ class AlgoKarta(tk.Frame):
         tk.Label(horni, text=info["nazev"], font=PISMO["bold"], fg=BARVY["text"],
                  bg=BARVY["surface"]).pack(side="left")
         # Zaškrtávací políčko kreslíme sami na malé plátno 18×18 px
+        # (highlightthickness=0 = plátno bez vlastního rámečku)
         self.check = tk.Canvas(horni, width=18, height=18, bg=BARVY["surface"],
                                highlightthickness=0)
         self.check.pack(side="right")
 
+        # Krátký popis algoritmu; wraplength = šířka v px, kde se text zalomí
         self.popis = tk.Label(vnitrek, text=info["kratce"], font=PISMO["small"],
                               fg=BARVY["text2"], bg=BARVY["surface"], justify="left",
                               anchor="w", wraplength=220)
@@ -584,38 +782,45 @@ class AlgoKarta(tk.Frame):
         # Spodní řádek: štítky se složitostí a stabilitou
         radek = tk.Frame(vnitrek, bg=BARVY["surface"])
         radek.pack(fill="x")
+        # info["stitky"] je seznam dvojic (text, tón) – rozbalíme je v cyklu
         for text, ton in info["stitky"]:
             stitek(radek, text, ton).pack(side="left", padx=(0, 6))
 
         # kliknout jde kamkoli na kartu, i na její popisky
         # (proto se události navážou na kartu i na všechny vnořené widgety)
         for w in self._vsechny(self):
-            w.bind("<Button-1>", lambda e: self.prepni())
-            w.bind("<Enter>", lambda e: self._hover(True))
-            w.bind("<Leave>", lambda e: self._hover(False))
+            w.bind("<Button-1>", lambda e: self.prepni())      # stisk levého tlačítka myši
+            w.bind("<Enter>", lambda e: self._hover(True))     # myš vjela na kartu
+            w.bind("<Leave>", lambda e: self._hover(False))    # myš odjela
         # Mezerník přepne výběr; "break" zastaví další zpracování klávesy.
         # Zápis (akce, "break")[1] provede akci a vrátí "break" v jednom výrazu.
         self.bind("<space>", lambda e: (self.prepni(), "break")[1])
         # Když se změní šířka karty, popis se zalomí podle nové šířky
+        # (e.width = nová šířka karty; 32 px = vnitřní okraje, minimum 120 px)
         self.bind("<Configure>", lambda e: self.popis.config(wraplength=max(120, e.width - 32)))
-        self._prekresli()
+        self._prekresli()             # nakreslí prázdné políčko
 
     def _vsechny(self, w):
         """Projde widget a rekurzivně všechny jeho potomky (generátor)."""
+        # yield = funkce nevrací seznam najednou, ale „podává“ widgety
+        # jeden po druhém (generátor). Nejdřív samotný widget w…
         yield w
+        # …pak pro každé dítě zavolá sama sebe (rekurze) a podá všechny
+        # jeho potomky. `yield from` předá dál všechno, co vnořené volání podá.
         for dite in w.winfo_children():
             yield from self._vsechny(dite)
 
     def _hover(self, uvnitr):
         # Nevybraná karta pod myší dostane o něco tmavší rámeček
+        # (vybraná má černý rámeček a ten necháváme být)
         if not self.vybrano:
             self.config(highlightbackground=BARVY["border_strong" if uvnitr else "border"])
 
     def prepni(self):
         """Obrátí výběr karty a dá vědět hlavnímu oknu."""
-        self.nastav(not self.vybrano)
-        self.focus_set()
-        self.pri_zmene()
+        self.nastav(not self.vybrano)  # not True -> False, not False -> True
+        self.focus_set()               # karta dostane fokus (modrý rámeček při Tabu)
+        self.pri_zmene()               # hlavní okno obnoví tlačítka Porovnat/Animovat
 
     def nastav(self, vybrano):
         """Nastaví výběr bez volání pri_zmene (používá „Vybrat vše“)."""
@@ -627,12 +832,17 @@ class AlgoKarta(tk.Frame):
         c = self.check
         c.delete("all")               # smaže vše, co bylo na plátně dřív
         if self.vybrano:
+            # Vybraná: černý rámeček karty, černé políčko s bílou fajfkou
             self.config(highlightbackground=BARVY["ink"])
+            # Políčko od (1, 1) do (17, 17) s poloměrem rohu 5 px
             zaobleny_obdelnik(c, 1, 1, 17, 17, 5, fill=BARVY["ink"], outline=BARVY["ink"])
             # fajfka = lomená čára přes tři body
+            # (5, 9.5) -> (8, 12.5) -> (13.5, 6); capstyle/joinstyle="round"
+            # = kulaté konce a ohyb čáry, width=2 = tloušťka 2 px
             c.create_line(5, 9.5, 8, 12.5, 13.5, 6, fill="#FFFFFF", width=2,
                           capstyle="round", joinstyle="round")
         else:
+            # Nevybraná: šedý rámeček karty a prázdné bílé políčko
             self.config(highlightbackground=BARVY["border"])
             zaobleny_obdelnik(c, 1, 1, 17, 17, 5, fill=BARVY["surface"],
                               outline=BARVY["border_strong"])
@@ -646,44 +856,51 @@ class Zalozky(tk.Frame):
     """
 
     def __init__(self, rodic, nazvy, pri_zmene):
+        # Šedý podklad s okrajem 3 px – vypadá jako „kolejnice“ se záložkami
         super().__init__(rodic, bg=BARVY["sunken"], padx=3, pady=3)
         self.pri_zmene = pri_zmene
-        self.polozky = []
+        self.polozky = []             # seznam Labelů jednotlivých záložek
+        # enumerate(nazvy) dává dvojice (pořadí, název): (0, "Časy"), (1, "Vstup") …
         for i, nazev in enumerate(nazvy):
             lbl = tk.Label(self, text=nazev, font=PISMO["small"], padx=14, pady=4,
                            cursor="pointinghand", takefocus=1,
                            highlightthickness=1, highlightcolor=BARVY["focus"])
-            lbl.pack(side="left")
+            lbl.pack(side="left")     # záložky vedle sebe zleva doprava
             # i=i „zamrazí“ aktuální hodnotu i do lambdy – bez toho by
             # všechny záložky po kliknutí poslaly poslední hodnotu i.
             lbl.bind("<Button-1>", lambda e, i=i: self.vyber(i))
             lbl.bind("<space>", lambda e, i=i: (self.vyber(i), "break")[1])
-            self.polozky.append(lbl)
-        self.vyber(0)
+            self.polozky.append(lbl)  # append = přidat na konec seznamu
+        self.vyber(0)                 # na začátku je vybraná první záložka
 
     def vyber(self, index):
         """Zvýrazní záložku s daným indexem a přepne panel."""
-        self.aktivni = index
+        self.aktivni = index          # zapamatujeme si, která záložka je vybraná
         for i, lbl in enumerate(self.polozky):
-            vybrana = i == index
+            vybrana = i == index      # True jen u záložky, na kterou se kliklo
             bg = BARVY["surface"] if vybrana else BARVY["sunken"]
+            # highlightbackground = bg -> rámeček (pro fokus) splyne s pozadím
             lbl.config(bg=bg, highlightbackground=bg,
                        fg=BARVY["text"] if vybrana else BARVY["text2"])
-        self.pri_zmene(index)
+        self.pri_zmene(index)         # hlavní okno ukáže odpovídající panel
 
 
 class SeznamHodnot(tk.Frame):
     """Všechny hodnoty v mřížce; malé šedé číslo vlevo je pozice v poli.
 
-    Používá se dvakrát: v záložce Vstup (původní data) a v záložce
-    Seřazeno (výstup ze sort.py). Hodnoty se vypisují do tk.Text
-    v pevně širokém písmu, takže sloupce jsou zarovnané. Počet sloupců
-    se dopočítá podle šířky okna.
+    Používá se třikrát: v záložce Vstup (původní data), v záložce
+    Seřazeno (výstup ze sort.py) a v okně kontroly souboru. Hodnoty se
+    vypisují do tk.Text v pevně širokém písmu, takže sloupce jsou
+    zarovnané. Počet sloupců se dopočítá podle šířky okna.
     """
 
     def __init__(self, rodic, vyska=12):
+        # vyska = výška v řádcích textu (ne v pixelech)
         super().__init__(rodic, bg=BARVY["surface2"], highlightthickness=1,
                          highlightbackground=BARVY["border"])
+        # tk.Text = víceřádkové textové pole. wrap="none" = řádky se
+        # nezalamují (mřížku si skládáme sami), spacing1/3 = mezera nad
+        # a pod řádkem, relief="flat" = bez 3D rámečku.
         self.text = tk.Text(self, height=vyska, bg=BARVY["surface2"], fg=BARVY["text"],
                             font=PISMO["mono"], relief="flat", wrap="none", padx=14, pady=10,
                             highlightthickness=0, cursor="arrow", spacing1=2, spacing3=2)
@@ -695,8 +912,10 @@ class SeznamHodnot(tk.Frame):
         self.text.config(yscrollcommand=posuvnik.set, state="disabled")  # disabled = jen pro čtení
         # Značka (tag) "pos" = šedé menší písmo pro čísla pozic
         self.text.tag_config("pos", foreground=BARVY["text3"], font=PISMO["mono_small"])
+        # Posuvník balíme jako první vpravo, text pak vyplní zbytek místa
         posuvnik.pack(side="right", fill="y", padx=(0, 3), pady=3)
         self.text.pack(side="left", fill="both", expand=True)
+        # Co se právě zobrazuje: hodnoty, jejich typ a počet sloupců mřížky
         self.hodnoty, self.typ, self.sloupcu = [], "integer", 0
         # Při změně velikosti se může změnit počet sloupců -> překreslit
         self.text.bind("<Configure>", lambda e: self._vykresli())
@@ -708,12 +927,18 @@ class SeznamHodnot(tk.Frame):
 
     def _vykresli(self):
         """Vypíše hodnoty do řádků po `sloupcu` buňkách."""
+        # Font(...).measure("0") = kolik pixelů zabere znak „0“. V pevně
+        # širokém písmu mají všechny znaky stejnou šířku.
         sirka_znaku = tkfont.Font(font=PISMO["mono"]).measure("0")   # šířka 1 znaku v px
+        # Všechny hodnoty převedeme na text (datum -> "2024-03-15" …)
         texty = [formatuj_hodnotu(v, self.typ) for v in self.hodnoty]
+        # default=1 – když je seznam prázdný, max() by jinak skončil chybou
         sirka_hod = max((len(t) for t in texty), default=1)   # nejdelší hodnota ve znacích
         sirka_pos = len(str(len(texty)))                      # počet číslic nejvyšší pozice
         # šířka jedné buňky v pixelech: pozice + mezera + hodnota + 4 mezery odstup
         bunka = (sirka_pos + 1 + sirka_hod + 4) * sirka_znaku
+        # Kolik buněk se vejde vedle sebe (28 px = vnitřní okraje pole);
+        # aspoň jeden sloupec i u velmi úzkého okna
         sloupcu = max(1, (self.text.winfo_width() - 28) // bunka)
         if sloupcu == self.sloupcu:
             return                      # počet sloupců se nezměnil – není co dělat
@@ -721,14 +946,17 @@ class SeznamHodnot(tk.Frame):
 
         self.text.config(state="normal")        # dočasně povolit zápis
         self.text.delete("1.0", "end")          # "1.0" = 1. řádek, 0. znak = začátek
+        # range(0, n, sloupcu) = 0, sloupcu, 2*sloupcu … = první index každého řádku
         for start in range(0, len(texty), sloupcu):
             casti = []
             for i in range(start, min(start + sloupcu, len(texty))):
                 # insert() bere dvojice (text, značka): číslo pozice se značkou
                 # "pos" (šedě), hodnota bez značky "". :>{n} = zarovnat doprava
                 # na n znaků, :<{n} = doleva.
+                # i + 1 = pozice pro lidi (počítá se od 1, index v Pythonu od 0)
                 casti += [f"{i + 1:>{sirka_pos}} ", "pos", f"{texty[i]:<{sirka_hod}}    ", ""]
-            casti += ["\n", ""]
+            casti += ["\n", ""]                 # konec řádku mřížky
+            # *casti „rozbalí“ seznam na jednotlivé parametry insert()
             self.text.insert("end", *casti)
         self.text.config(state="disabled")      # zase jen pro čtení
 
@@ -743,8 +971,10 @@ class Posuvnik(tk.Canvas):
     """
 
     def __init__(self, rodic, od, do, hodnota, prikaz, sirka=200):
+        # Plátno 22 px vysoké, pozadí stejné jako rodič (posuvník „splyne“)
         super().__init__(rodic, width=sirka, height=22, bg=rodic.cget("bg"),
                          highlightthickness=0, cursor="pointinghand")
+        # Rozsah hodnot, aktuální hodnota a funkce volaná při změně
         self.od, self.do, self.hodnota, self.prikaz = od, do, hodnota, prikaz
         self.bind("<Configure>", lambda e: self._vykresli())   # změna velikosti
         self.bind("<Button-1>", self._tah)                     # kliknutí
@@ -758,25 +988,35 @@ class Posuvnik(tk.Canvas):
     def _x(self, hodnota):
         """Převede hodnotu na vodorovnou souřadnici v pixelech.
         9 px je okraj na každé straně, aby se kolečko vešlo celé."""
+        # max(1, …) chrání před dělením nulou, když od == do (jen 1 krok)
         rozsah = max(1, self.do - self.od)
+        # (hodnota - od) / rozsah = podíl 0–1; vynásobený šířkou dráhy
+        # (šířka plátna bez dvou okrajů po 9 px) a posunutý o levý okraj
         return 9 + (hodnota - self.od) / rozsah * (self.winfo_width() - 18)
 
     def _tah(self, e):
         """Opačný převod: poloha myši -> hodnota (zaokrouhlená na celé číslo)."""
         rozsah = max(1, self.do - self.od)
         # podíl 0–1 = jak daleko je myš na dráze; min/max ho udrží v mezích
+        # (e.x = vodorovná poloha myši uvnitř plátna)
         podil = min(max((e.x - 9) / max(1, self.winfo_width() - 18), 0), 1)
         hodnota = self.od + round(podil * rozsah)
+        # Hodnota se změnila -> překreslit a dát vědět majiteli posuvníku
         if hodnota != self.hodnota:
             self.nastav(hodnota)
             self.prikaz(hodnota)
 
     def _vykresli(self):
+        # Smaže staré kreslení a nakreslí posuvník znovu podle self.hodnota
         self.delete("all")
+        # w = šířka plátna, stred = svislý střed (plátno je vysoké 22 px)
         w, stred = self.winfo_width(), 11
-        x = self._x(self.hodnota)
+        x = self._x(self.hodnota)     # vodorovná poloha kolečka
+        # 1) šedá dráha přes celou šířku (kulaté konce, tloušťka 4 px)
         self.create_line(9, stred, w - 9, stred, width=4, capstyle="round", fill=BARVY["sunken"])
+        # 2) černá vyplněná část od začátku ke kolečku
         self.create_line(9, stred, x, stred, width=4, capstyle="round", fill=BARVY["ink"])
+        # 3) kolečko (ovál vepsaný do čtverce 16×16 px kolem bodu x, stred)
         self.create_oval(x - 8, stred - 8, x + 8, stred + 8, fill=BARVY["surface"],
                          outline=BARVY["ink"], width=2)
 
@@ -784,6 +1024,10 @@ class Posuvnik(tk.Canvas):
 # ---------------------------------------------------------------------------
 # 5) Modální okna: společný základ, kontrola souboru, animace
 # ---------------------------------------------------------------------------
+# Dědičnost: OknoKontroly a OknoAnimace „dědí“ z třídy Dialog. To znamená,
+# že automaticky umí všechno, co Dialog (otevřít se uprostřed, být
+# modální, zavřít se Esc), a samy si přidávají jen svůj obsah.
+# Díky tomu kód pro modální okno není v souboru dvakrát.
 
 class Dialog(tk.Toplevel):
     """Společný základ modálních oken (OknoKontroly, OknoAnimace).
@@ -795,15 +1039,18 @@ class Dialog(tk.Toplevel):
     """
 
     def __init__(self, app, titulek, sirka, vyska):
+        # app = hlavní aplikace (SortApp); app.root = hlavní okno Tk
         super().__init__(app.root, bg=BARVY["surface"])
-        self.app = app
-        self.fokus = None
-        self.title(titulek)
+        self.app = app                # přes self.app může okno volat hlavní aplikaci
+        self.fokus = None             # podtřída sem uloží např. tlačítko „Ano“
+        self.title(titulek)           # text v liště okna
         self.transient(app.root)                  # okno patří k hlavnímu oknu (je nad ním)
         self.geometry(self._stred(sirka, vyska))  # velikost a poloha uprostřed hlavního okna
         self.bind("<Escape>", lambda e: self.zavri())
         # Křížek v liště okna má zavolat naši funkci zavri
+        # (jinak by okno zmizelo, ale zůstalo by „modální“ a hlavní okno zamčené)
         self.protocol("WM_DELETE_WINDOW", self.zavri)
+        # Modalitu zapneme až za 100 ms – okno se musí nejdřív zobrazit
         self.after(100, self._modalni)
 
     def _modalni(self):
@@ -813,21 +1060,25 @@ class Dialog(tk.Toplevel):
         except tk.TclError:             # okno ještě není zobrazené – zkusit znovu
             self.after(100, self._modalni)
             return
+        # Prvek určený podtřídou dostane fokus (Enter / mezerník fungují hned)
         if self.fokus:
             self.fokus.focus_set()
 
     def _stred(self, w, h):
         """Vrátí geometrii "ŠxV+X+Y", aby okno leželo uprostřed hlavního okna."""
         r = self.app.root
+        # winfo_rootx/rooty = poloha hlavního okna na obrazovce,
+        # (šířka hlavního - šířka dialogu) // 2 = odsazení, aby byl uprostřed.
+        # max(0, …) – když je dialog větší než hlavní okno, nezačne mimo něj.
         x = r.winfo_rootx() + max(0, (r.winfo_width() - w) // 2)
         y = r.winfo_rooty() + max(0, (r.winfo_height() - h) // 2)
-        return f"{w}x{h}+{x}+{y}"
+        return f"{w}x{h}+{x}+{y}"     # např. "720x580+260+150"
 
     def zavri(self):
         """Zavře okno, uvolní modalitu a vrátí fokus hlavnímu oknu."""
-        self.grab_release()
-        self.destroy()
-        self.app.root.focus_set()
+        self.grab_release()           # hlavní okno jde zase ovládat
+        self.destroy()                # okno zmizí i se všemi svými widgety
+        self.app.root.focus_set()     # klávesnice zpět do hlavního okna
 
 
 class OknoKontroly(Dialog):
@@ -840,17 +1091,29 @@ class OknoKontroly(Dialog):
     """
 
     def __init__(self, app, soubor, typ, hodnoty, upozorneni):
+        # Parametry dodá SortApp.nacti_soubor():
+        #   soubor     – jen název souboru (např. "cisla.txt") pro nadpis
+        #   typ        – rozpoznaný typ ("integer", "float", "date", "text")
+        #   hodnoty    – převedené hodnoty z rozpoznej_hodnoty()
+        #   upozorneni – "" nebo věta o smíchaných datech
+        # Nejdřív postaví Dialog: okno 720×580 px uprostřed hlavního okna
         super().__init__(app, "Kontrola načtených dat", 720, 580)
+        # Uložíme si data – použijí se až po kliknutí na „Ano, třídit“
         self.soubor, self.typ, self.hodnoty = soubor, typ, hodnoty
-        self.minsize(600, 520)
+        self.minsize(600, 520)        # menší okno už nejde zmenšit
+        # Obal s okraji kolem celého obsahu okna
         obal = tk.Frame(self, bg=BARVY["surface"])
         obal.pack(fill="both", expand=True, padx=36, pady=28)
 
         # --- hlavička: odkud data jsou, jaký typ jsme poznali a proč ---
+        # Malý šedý řádek nad nadpisem, např. „Rozpoznaný typ dat · cisla.txt“
         tk.Label(obal, text=f"Rozpoznaný typ dat · {soubor}", font=PISMO["small"],
                  fg=BARVY["text3"], bg=BARVY["surface"], anchor="w").pack(fill="x")
+        # Velký nadpis = rozpoznaný typ; capitalize() = první písmeno velké
+        # („celá čísla“ -> „Celá čísla“)
         tk.Label(obal, text=popis_typu(typ).capitalize(), font=PISMO["dialog_title"],
                  fg=BARVY["text"], bg=BARVY["surface"], anchor="w").pack(fill="x")
+        # Věta, PROČ aplikace zvolila tento typ (slovník PROC_TYP v části 3)
         tk.Label(obal, text=PROC_TYP[typ], font=PISMO["body"], fg=BARVY["text2"],
                  bg=BARVY["surface"], anchor="w", justify="left",
                  wraplength=640).pack(fill="x", pady=(2, 12))
@@ -861,10 +1124,12 @@ class OknoKontroly(Dialog):
         cip(cipy, f"{cesky_pocet(len(hodnoty))} hodnot").pack(side="left", padx=(0, 6))
         if typ != "text":
             # min()/max() jen pro informaci v okně – netřídí se tím
+            # (formatuj_hodnotu převede např. pořadové číslo dne zpět na datum)
             cip(cipy, f"od {formatuj_hodnotu(min(hodnoty), typ)} "
                       f"do {formatuj_hodnotu(max(hodnoty), typ)}").pack(side="left")
 
         # --- žluté upozornění, když data míchají čísla a text ---
+        # Prázdný řetězec "" je v podmínce False -> upozornění se nezobrazí
         if upozorneni:
             tk.Label(obal, text=upozorneni, font=PISMO["small"], fg=BARVY["yellow"],
                      bg=BARVY["yellow_bg"], anchor="w", justify="left", wraplength=620,
@@ -875,11 +1140,14 @@ class OknoKontroly(Dialog):
                  bg=BARVY["surface"], anchor="w").pack(fill="x", pady=(18, 6))
         # Tlačítka balíme dřív než seznam se side="bottom": když se okno
         # zmenší, zmenší se seznam a tlačítka zůstanou vidět.
+        # (pack rozdává místo v pořadí balení – co se zabalí dřív, má jistotu)
         tlacitka = tk.Frame(obal, bg=BARVY["surface"])
         tlacitka.pack(side="bottom", fill="x")
+        # Otázka ze zadání: chce uživatel třídit právě tento typ dat?
         tk.Label(obal, text=f"Chcete třídit tyto hodnoty jako {popis_typu(typ)}?",
                  font=PISMO["bold"], fg=BARVY["text"], bg=BARVY["surface"],
                  anchor="w").pack(side="bottom", fill="x", pady=(18, 12))
+        # Seznam vyplní zbylé místo mezi nadpisem „Načtené hodnoty“ a otázkou
         seznam = SeznamHodnot(obal, vyska=8)
         seznam.pack(fill="both", expand=True)
         seznam.zobraz(hodnoty, typ)
@@ -893,17 +1161,18 @@ class OknoKontroly(Dialog):
         ano.pack(side="right")
         jiny.pack(side="right", padx=8)
         self.bind("<Return>", lambda e: self.potvrd())   # Enter = Ano
-        self.fokus = ano
+        self.fokus = ano              # po otevření má fokus „Ano, třídit“
 
     def potvrd(self):
         """Ano – data se použijí v hlavním okně."""
-        self.zavri()
+        self.zavri()                  # nejdřív zavřít okno (uvolní modalitu)…
+        # …pak předat data hlavnímu oknu – stejná funkce jako u generování
         self.app._nastav_data(self.hodnoty, self.typ, self.soubor)
 
     def jiny_soubor(self):
         """Uživatel načetl něco jiného, než chtěl – znovu výběr souboru."""
         self.zavri()
-        self.app.nacti_soubor()
+        self.app.nacti_soubor()       # znovu systémové okno pro výběr souboru
 
 
 # Animace nic netřídí sama. Algoritmus ze sort.py při třídění zapisuje každý
@@ -913,11 +1182,21 @@ class OknoKontroly(Dialog):
 #   "hotovo"  – indexy prvků na konečném místě (zeleně)
 #   "zprava"  – česky popsaný krok („Porovnávám prvek s pivotem.“)
 # Okno jen tyto snímky postupně kreslí jako sloupcový graf.
+#
+# Příklad jednoho snímku:
+#   {"pole": [5, 2, 9], "aktivni": [0, 1], "hotovo": [2],
+#    "zprava": "Porovnávám sousedy na pozicích 1 a 2."}
 
 class OknoAnimace(Dialog):
     """Přehrává kroky, které zaznamenal algoritmus v sort.py (parametr `kroky`)."""
 
     def __init__(self, app, info, snimky, typ, poznamka):
+        # Parametry dodá SortApp.animuj():
+        #   info     – popis algoritmu z ALGORITMY_INFO (název, vysvětlení)
+        #   snimky   – seznam snímků zaznamenaných v sort.py
+        #   typ      – typ hodnot (kvůli zobrazení hodnoty u pozice)
+        #   poznamka – např. „15 hodnot“ nebo „ukázka 100 z 1 000 hodnot“
+        # Dialog vytvoří okno 1040×820 px s názvem algoritmu v liště
         super().__init__(app, info["nazev"], 1040, 820)
         self.snimky, self.typ = snimky, typ
         # index = číslo právě zobrazeného snímku, hraje = běží přehrávání,
@@ -934,9 +1213,11 @@ class OknoAnimace(Dialog):
         tk.Label(hlava, text=info["nazev"], font=PISMO["dialog_title"], fg=BARVY["text"],
                  bg=BARVY["surface"]).pack(side="left")
         Tlacitko(hlava, "Zavřít", self.zavri, "secondary", padx=12, pady=4).pack(side="right")
+        # Podnadpis: kolik hodnot a kolik kroků algoritmus zaznamenal
         tk.Label(obal, text=f"{poznamka} · {cesky_pocet(len(snimky))} kroků zaznamenaných v sort.py",
                  font=PISMO["small"], fg=BARVY["text3"], bg=BARVY["surface"],
                  anchor="w").pack(fill="x", pady=(2, 10))
+        # Vysvětlení principu algoritmu (text z ALGORITMY_INFO)
         tk.Label(obal, text=info["vysvetleni"], font=PISMO["body"], fg=BARVY["text2"],
                  bg=BARVY["surface"], justify="left", anchor="w",
                  wraplength=860).pack(fill="x", pady=(0, 14))
@@ -944,6 +1225,8 @@ class OknoAnimace(Dialog):
         # --- legenda barev ---
         legenda = tk.Frame(obal, bg=BARVY["surface"])
         legenda.pack(fill="x", pady=(0, 8))
+        # Cyklus přes trojici dvojic (barva, popis) – pro každou barevný
+        # čtvereček 10×10 px a vedle něj text
         for barva, text in (("bar_active", "právě porovnávané"), ("bar", "ostatní"),
                             ("bar_done", "na konečném místě")):
             ctverec = tk.Canvas(legenda, width=10, height=10, bg=BARVY["surface"],
@@ -960,6 +1243,8 @@ class OknoAnimace(Dialog):
         # Šířku plátna známe až po zobrazení okna -> kreslíme při každé změně velikosti
         self.platno.bind("<Configure>", lambda e: self._vykresli())
         n = len(snimky[0]["pole"])                 # počet prvků v animaci
+        # Nápověda pod grafem – text se liší podle počtu sloupců
+        # (podmíněný výraz: "text A" if podmínka else "text B")
         tk.Label(obal, font=PISMO["tiny"], fg=BARVY["text3"], bg=BARVY["surface"], anchor="w",
                  text="Výška sloupce odpovídá pořadí hodnoty; pod sloupcem je pozice."
                  if n <= 40 else "Výška sloupce odpovídá pořadí hodnoty. Popisky se u tolika "
@@ -970,19 +1255,24 @@ class OknoAnimace(Dialog):
         krok_box.pack(fill="x")
         vnitrek = tk.Frame(krok_box, bg=BARVY["sunken"])
         vnitrek.pack(fill="x", padx=18, pady=12)
+        # Vlevo „12 / 340“ – pevná šířka 13 znaků, ať text vedle neposkakuje
+        # (anchor="nw" = text přilepený k levému hornímu rohu)
         self.lbl_pocet = tk.Label(vnitrek, font=PISMO["mono"], fg=BARVY["text3"],
                                   bg=BARVY["sunken"], width=13, anchor="nw")
         self.lbl_pocet.pack(side="left", anchor="n")
         texty = tk.Frame(vnitrek, bg=BARVY["sunken"])
         texty.pack(side="left", fill="x", expand=True)
+        # Popis kroku ze sort.py, např. „Prohazuji prvky na pozicích 3 a 4.“
         self.lbl_zprava = tk.Label(texty, font=PISMO["body"], fg=BARVY["text"],
                                    bg=BARVY["sunken"], anchor="w", justify="left")
         self.lbl_zprava.pack(fill="x")
+        # Pod ním aktivní pozice a jejich hodnoty, např. „Pozice 3 → 42 · 4 → 17“
         self.lbl_pozice = tk.Label(texty, font=PISMO["mono_small"], fg=BARVY["text2"],
                                    bg=BARVY["sunken"], anchor="w")
         self.lbl_pozice.pack(fill="x", pady=(3, 0))
 
         # --- posuvník kroků: přetažením se dá skočit na libovolný krok ---
+        # Rozsah 0 až (počet snímků - 1), začíná na 0, při tažení volá _posun
         self.posuvnik = Posuvnik(obal, 0, len(snimky) - 1, 0, self._posun)
         self.posuvnik.pack(fill="x", pady=(14, 12))
 
@@ -992,6 +1282,8 @@ class OknoAnimace(Dialog):
         self.btn_play = Tlacitko(ovladani, "Přehrát", self.prepni_prehravani, "primary")
         self.btn_play.lbl.config(width=10)   # pevná šířka – nepřeskakuje mezi Přehrát/Pozastavit
         self.btn_play.pack(side="left")
+        # Tlačítko Krok: lambda provede dvě věci – zastaví přehrávání a udělá
+        # jeden krok dopředu (n-tice se vyhodnotí zleva doprava)
         self.btn_krok = Tlacitko(ovladani, "Krok", lambda: (self.zastav(), self.krok(1)))
         self.btn_krok.pack(side="left", padx=8)
         Tlacitko(ovladani, "Od začátku", self.od_zacatku, "ghost").pack(side="left")
@@ -1002,6 +1294,7 @@ class OknoAnimace(Dialog):
                                      fg=BARVY["text2"], bg=BARVY["surface"], width=11, anchor="e")
         self.lbl_rychlost.pack(side="right")
         self.rychlost = 5               # kroků za sekundu
+        # Posuvník rychlosti 1–300 kroků/s, při změně volá _zmena_rychlosti
         Posuvnik(ovladani, 1, 300, self.rychlost, self._zmena_rychlosti,
                  sirka=150).pack(side="right", padx=8)
         tk.Label(ovladani, text="Rychlost", font=PISMO["small"], fg=BARVY["text2"],
@@ -1010,6 +1303,7 @@ class OknoAnimace(Dialog):
         # --- nápověda klávesových zkratek ---
         napoveda = tk.Frame(obal, bg=BARVY["surface"])
         napoveda.pack(fill="x", pady=(16, 0))
+        # Pro každou dvojici (klávesa, popis): šedá „klávesa“ a vedle popis
         for klavesa, popis in (("Mezerník", "přehrát / pozastavit"), ("→", "další krok"),
                                ("←", "předchozí"), ("Esc", "zavřít")):
             tk.Label(napoveda, text=klavesa, font=PISMO["mono_small"], fg=BARVY["text2"],
@@ -1017,13 +1311,13 @@ class OknoAnimace(Dialog):
             tk.Label(napoveda, text=popis, font=PISMO["tiny"], fg=BARVY["text3"],
                      bg=BARVY["surface"]).pack(side="left", padx=(0, 14))
 
-        # Klávesové zkratky okna
+        # Klávesové zkratky okna (Esc už zařídil Dialog)
         self.bind("<space>", lambda e: self.prepni_prehravani())
-        self.bind("<Right>", lambda e: (self.zastav(), self.krok(1)))
-        self.bind("<Left>", lambda e: (self.zastav(), self.krok(-1)))
+        self.bind("<Right>", lambda e: (self.zastav(), self.krok(1)))    # šipka doprava
+        self.bind("<Left>", lambda e: (self.zastav(), self.krok(-1)))    # šipka doleva
         self.fokus = self.btn_play       # po otevření (Dialog._modalni) dostane fokus Přehrát
 
-        self._vykresli()
+        self._vykresli()                 # nakreslí první snímek (index 0)
 
     # --- vykreslení jednoho snímku -------------------------------------------------
     def _vykresli(self):
@@ -1032,8 +1326,8 @@ class OknoAnimace(Dialog):
         # set() kvůli rychlému testu „i in aktivni“
         pole, aktivni, hotovo = snimek["pole"], set(snimek["aktivni"]), set(snimek["hotovo"])
         c = self.platno
-        c.delete("all")
-        W, H = c.winfo_width(), c.winfo_height()
+        c.delete("all")                  # smazat předchozí snímek
+        W, H = c.winfo_width(), c.winfo_height()   # skutečná velikost plátna v px
         if W > 10:                       # plátno už má skutečnou velikost
             n = len(pole)
             popisky = n <= 40            # čísla pozic jen u menšího počtu sloupců
@@ -1041,40 +1335,48 @@ class OknoAnimace(Dialog):
             # výška sloupce podle pořadí hodnoty, ne podle hodnoty samotné
             # (aby byly vidět i rozdíly u dat s velkým rozptylem)
             # poradi: hodnota -> její pořadí mezi různými hodnotami (1 = nejmenší)
+            # set(pole) = jen různé hodnoty, sorted() je seřadí, enumerate očísluje.
+            # Funguje pro čísla, data i text, protože pracuje jen s pořadím.
             poradi = {v: i + 1 for i, v in enumerate(sorted(set(pole)))}
             max_poradi = max(1, len(poradi))
             sirka = (W - 2 * okraj) / n               # šířka místa na jeden sloupec
             mezera = min(4, sirka * 0.18)             # mezera mezi sloupci
             spodek = H - okraj - dole                 # y-souřadnice spodní hrany sloupců
             for i, v in enumerate(pole):
+                # Výška = podíl pořadí z maxima × dostupná výška grafu
                 h = max(3, poradi[v] / max_poradi * (spodek - okraj))   # výška aspoň 3 px
-                x1 = okraj + i * sirka + mezera / 2
-                x2 = x1 + max(sirka - mezera, 1)
+                x1 = okraj + i * sirka + mezera / 2   # levá hrana i-tého sloupce
+                x2 = x1 + max(sirka - mezera, 1)      # pravá hrana (aspoň 1 px široký)
                 # Oranžová má přednost před zelenou: aktivní prvek je vidět,
                 # i když už je na konečném místě.
+                # Zpětné lomítko na konci řádku = výraz pokračuje na dalším řádku.
                 barva = BARVY["bar_active"] if i in aktivni else \
                     BARVY["bar_done"] if i in hotovo else BARVY["bar"]
                 # Na plátně roste y směrem DOLŮ, proto sloupec začíná nahoře
                 # v (spodek - h) a končí dole ve `spodek`.
                 c.create_rectangle(x1, spodek - h, x2, spodek, fill=barva, outline="")
                 if popisky:
+                    # Číslo pozice pod středem sloupce
                     c.create_text((x1 + x2) / 2, spodek + 12, text=str(i + 1),
                                   fill=BARVY["text3"], font=PISMO["mono_small"])
 
+        # Texty pod grafem: „3 / 120“, popis kroku a aktivní pozice
         self.lbl_pocet.config(text=f"{self.index} / {len(self.snimky) - 1}")
         self.lbl_zprava.config(text=snimek["zprava"])
         # Pozice se v okně počítají od 1 (pro lidi), indexy v Pythonu od 0
+        # " · ".join(...) spojí texty jednotlivých pozic tečkou uprostřed
         self.lbl_pozice.config(text="Pozice: –" if not snimek["aktivni"] else "Pozice " + " · ".join(
             f"{i + 1} → {formatuj_hodnotu(pole[i], self.typ)}" for i in snimek["aktivni"]))
-        self.posuvnik.nastav(self.index)
+        self.posuvnik.nastav(self.index)       # jezdec posuvníku na aktuální krok
         na_konci = self.index >= len(self.snimky) - 1
         self.btn_krok.nastav(povoleno=not na_konci)   # na posledním kroku už „Krok“ nejde
         if na_konci:
-            self.zastav()
+            self.zastav()                # přehrávání na konci samo skončí
 
     # --- ovládání ------------------------------------------------------------------
     def krok(self, smer):
         """Posun o jeden snímek: smer = +1 dopředu, -1 dozadu."""
+        # min(max(…, 0), poslední) = „sevření“ do rozsahu 0 až poslední snímek
         novy = min(max(self.index + smer, 0), len(self.snimky) - 1)   # nepřekročit okraje
         if novy == self.index:          # jsme na začátku/konci, není kam jít
             self.zastav()
@@ -1087,28 +1389,31 @@ class OknoAnimace(Dialog):
         # Interval 1000 / rychlost ms -> např. 5 kroků/s = každých 200 ms.
         self.krok(1)
         if self.hraje:
+            # after() vrátí identifikátor, uložíme ho, ať jde tik zrušit
             self.casovac = self.after(int(1000 / self.rychlost), self._tik)
 
     def prepni_prehravani(self):
         """Tlačítko Přehrát / Pozastavit (a mezerník)."""
-        if self.hraje:
+        if self.hraje:                  # už hraje -> pozastavit
             self.zastav()
             return
         if self.index >= len(self.snimky) - 1:   # na konci -> přehrát znovu od začátku
             self.index = 0
         self.hraje = True
         self.btn_play.nastav(text="Pozastavit")
+        # první tik za 1000 / rychlost ms, další si naplánuje _tik sám
         self.casovac = self.after(int(1000 / self.rychlost), self._tik)
 
     def zastav(self):
         """Zastaví přehrávání a zruší naplánovaný tik."""
         self.hraje = False
         if self.casovac:
-            self.after_cancel(self.casovac)
+            self.after_cancel(self.casovac)   # zrušit naplánované volání _tik
             self.casovac = None
         self.btn_play.nastav(text="Přehrát")
 
     def od_zacatku(self):
+        # Tlačítko „Od začátku“: zastavit a skočit na první snímek
         self.zastav()
         self.index = 0
         self._vykresli()
@@ -1126,13 +1431,22 @@ class OknoAnimace(Dialog):
 
     def zavri(self):
         """Zavře okno: zastaví časovač a pak zavře okno jako každý Dialog."""
+        # Přepsaná metoda: OknoAnimace má navíc časovač, který se musí
+        # zrušit, jinak by _tik běžel dál nad zničeným oknem.
         self.zastav()
-        super().zavri()
+        super().zavri()                  # pak zbytek zařídí Dialog.zavri()
 
 
 # ---------------------------------------------------------------------------
 # 6) Hlavní okno
 # ---------------------------------------------------------------------------
+# Třída SortApp postaví celé hlavní okno a obsahuje všechny akce tlačítek.
+# Metody jsou seřazené zhruba tak, jak jde okno shora dolů:
+#   __init__, _styly, _postav_okno  – příprava a rozvržení okna
+#   _hlavicka, _hero, _karta_…      – jednotlivé části stránky
+#   generuj, nacti_soubor, …        – akce karty 01 Data
+#   porovnej, _vlakno_mereni, …     – měření (karta 02 a 03)
+#   zobraz_serazeno, export_csv, animuj – výsledky, export a animace
 
 class SortApp:
     """Hlavní okno aplikace – drží data, výsledky a obsluhuje všechna tlačítka.
@@ -1153,7 +1467,9 @@ class SortApp:
     """
 
     def __init__(self, root):
+        # root = hlavní okno Tk vytvořené v main()
         self.root = root
+        # --- stav aplikace (data a výsledky) ---
         self.hodnoty, self.typ = [], "integer"   # aktuální data a jejich typ
         self.vysledky = {}              # klíč -> {"median", "min", "max", "ok"}
         self.serazeno = None            # {"klic", "pole", "ok"} pro záložku Seřazeno
@@ -1162,13 +1478,14 @@ class SortApp:
         self.fronta = queue.Queue()     # zprávy z vlákna s měřením
         self.radky = {}                 # klíč -> widgety jednoho řádku tabulky výsledků
 
-        root.title("SortApp · Laboratoř třídění")
+        # --- vlastnosti hlavního okna ---
+        root.title("SortApp · Laboratoř třídění")   # text v liště okna
         root.configure(bg=BARVY["bg"])
         root.geometry("1240x880")       # výchozí velikost okna
         root.minsize(980, 640)          # menší okno už by se nevešlo
-        self._styly()
-        self._postav_okno()
-        self._obnov_tlacitka()
+        self._styly()                   # barvy pro ttk widgety
+        self._postav_okno()             # vytvoří všechny části okna
+        self._obnov_tlacitka()          # na začátku nejsou data -> většina tlačítek vypnutá
         root.after(40, self._zpracuj_frontu)    # spustí pravidelné čtení fronty
 
     # --- styly ttk (rozbalovací seznamy, posuvníky) --------------------------------
@@ -1181,31 +1498,36 @@ class SortApp:
         """
         s = ttk.Style(self.root)
         s.theme_use("clam")      # téma „clam“ jde na rozdíl od macOS tématu obarvit
+        # Vzhled rozbalovacího seznamu: pozadí, text, rámeček, šipka a vnitřní okraj
         s.configure("TCombobox", fieldbackground=BARVY["surface"], background=BARVY["surface"],
                     foreground=BARVY["text"], bordercolor=BARVY["border_strong"],
                     lightcolor=BARVY["surface"], darkcolor=BARVY["surface"],
                     arrowcolor=BARVY["text2"], padding=(8, 5), arrowsize=12)
+        # map(): barvy podle stavu – seznam [(stav, barva)]
         s.map("TCombobox", fieldbackground=[("readonly", BARVY["surface"])],
               selectbackground=[("readonly", BARVY["surface"])],
               selectforeground=[("readonly", BARVY["text"])],
               bordercolor=[("focus", BARVY["focus"])],
               background=[("active", BARVY["sunken"])])
         # Rozbalený seznam Comboboxu je obyčejný Listbox – nastavuje se přes option_add
+        # (vzor "*TCombobox*Listbox.font" = písmo všech Listboxů uvnitř Comboboxů)
         self.root.option_add("*TCombobox*Listbox.font", PISMO["body"])
         self.root.option_add("*TCombobox*Listbox.selectBackground", BARVY["sunken"])
         self.root.option_add("*TCombobox*Listbox.selectForeground", BARVY["text"])
 
         # Vlastní rozložení posuvníku: jen dráha (trough) a jezdec (thumb),
         # bez šipek nahoru/dolů -> tenký moderní posuvník.
+        # Je to strom prvků: dráha obsahuje („children“) jezdce.
         tenky = [("Vertical.Scrollbar.trough", {
             "children": [("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})],
             "sticky": "ns"})]
         # Dva styly: jeden pro seznamy hodnot (světlé pozadí), druhý pro celé okno
         for styl, pozadi in (("Tenky.Vertical.TScrollbar", BARVY["surface2"]),
                              ("Okno.Vertical.TScrollbar", BARVY["bg"])):
-            s.layout(styl, tenky)
+            s.layout(styl, tenky)       # použít rozložení bez šipek
             s.configure(styl, troughcolor=pozadi, background=BARVY["bar"], bordercolor=pozadi,
                         lightcolor=BARVY["bar"], darkcolor=BARVY["bar"], arrowsize=8, gripcount=0)
+            # jezdec pod myší ztmavne
             s.map(styl, background=[("active", BARVY["text3"])])
 
     # --- rozvržení -----------------------------------------------------------------
@@ -1215,12 +1537,14 @@ class SortApp:
         # Obsah je na posuvném plátně, aby se vešel i do menšího okna.
         # Frame se v Tkinteru posouvat nedá, Canvas ano. Proto vložíme celou
         # stránku (Frame) do plátna přes create_window a posouváme plátnem.
+        # yscrollincrement=24 = jedno „cvaknutí“ kolečka posune o 24 px.
         self.platno = tk.Canvas(r, bg=BARVY["bg"], highlightthickness=0, yscrollincrement=24)
         posuvnik = ttk.Scrollbar(r, orient="vertical", command=self.platno.yview,
                                  style="Okno.Vertical.TScrollbar")
-        self.platno.configure(yscrollcommand=posuvnik.set)
+        self.platno.configure(yscrollcommand=posuvnik.set)   # propojení oběma směry
         posuvnik.pack(side="right", fill="y", padx=2, pady=2)
         self.platno.pack(side="left", fill="both", expand=True)
+        # Stránka = Frame, do kterého se skládají všechny části okna
         self.stranka = tk.Frame(self.platno, bg=BARVY["bg"])
         # anchor="n" = stránka je ukotvená horním středem -> dá se vycentrovat
         self.okno_id = self.platno.create_window(0, 0, window=self.stranka, anchor="n")
@@ -1228,6 +1552,7 @@ class SortApp:
         self.platno.bind("<Configure>", self._zmena_velikosti)              # změnila se velikost okna
         r.bind_all("<MouseWheel>", self._kolecko)                           # kolečko myši kdekoli v okně
 
+        # Části stránky shora dolů
         self._hlavicka()
         self._hero()
         # Mřížka se dvěma sloupci: vlevo karta Data, vpravo Algoritmy,
@@ -1237,6 +1562,9 @@ class SortApp:
         mrizka.pack(fill="x")
         mrizka.columnconfigure(0, weight=5, uniform="k")
         mrizka.columnconfigure(1, weight=6, uniform="k")
+        # Každá metoda _karta_… vrátí hotovou kartu, hned ji umístíme do mřížky.
+        # sticky="nsew" = karta se roztáhne do všech stran své buňky
+        # (n = sever/nahoru, s = jih/dolů, e = východ/vpravo, w = západ/vlevo).
         self._karta_data(mrizka).grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 16))
         self._karta_algoritmy(mrizka).grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 16))
         self._karta_vysledky(mrizka).grid(row=1, column=0, columnspan=2, sticky="nsew")
@@ -1246,7 +1574,7 @@ class SortApp:
         # obsah max. 1180 px široký a vycentrovaný
         # (48 px = okraje vlevo a vpravo; stránka leží ve středu e.width / 2)
         self.platno.itemconfigure(self.okno_id, width=min(e.width - 48, 1180))
-        self.platno.coords(self.okno_id, e.width / 2, 0)
+        self.platno.coords(self.okno_id, e.width / 2, 0)    # posunout střed stránky
         self._oblast_posunu()
 
     def _oblast_posunu(self):
@@ -1260,6 +1588,7 @@ class SortApp:
         # seznamy hodnot (tk.Text) se posouvají samy, stránka jen mimo ně
         # str(e.widget) je cesta widgetu ve stromu (".!canvas.!frame…");
         # když nezačíná cestou plátna, je událost z jiného okna (animace).
+        # isinstance(x, Třída) = je x objekt dané třídy?
         if isinstance(e.widget, tk.Text) or not str(e.widget).startswith(str(self.platno)):
             return
         # (0.0, 1.0) = je vidět celá stránka, není co posouvat
@@ -1271,9 +1600,11 @@ class SortApp:
         """Horní lišta: logo, název aplikace a vpravo stav (kolik algoritmů je v sort.py)."""
         h = tk.Frame(self.stranka, bg=BARVY["bg"])
         h.pack(fill="x", pady=(20, 0))
+        # Logo: černý zaoblený čtverec 26×26 px se třemi bílými sloupci
         logo = tk.Canvas(h, width=26, height=26, bg=BARVY["bg"], highlightthickness=0)
         zaobleny_obdelnik(logo, 0, 0, 26, 26, 7, fill=BARVY["ink"], outline="")
         for i, vyska in enumerate((7, 11, 15)):          # tři sloupce = seřazená data
+            # sloupec i: vlevo na x = 7 + i*5, široký 3 px, dole končí na y = 20
             logo.create_rectangle(7 + i * 5, 20 - vyska, 10 + i * 5, 20, fill="#FFFFFF", outline="")
         logo.pack(side="left")
         tk.Label(h, text="SortApp", font=PISMO["brand"], fg=BARVY["text"],
@@ -1281,6 +1612,7 @@ class SortApp:
         tk.Label(h, text="laboratoř třídění", font=PISMO["small"], fg=BARVY["text3"],
                  bg=BARVY["bg"]).pack(side="left")
 
+        # Vpravo bílý „odznak“ se zelenou tečkou a počtem algoritmů
         stav = tk.Frame(h, bg=BARVY["surface"], highlightthickness=1,
                         highlightbackground=BARVY["border"])
         stav.pack(side="right")
@@ -1295,6 +1627,8 @@ class SortApp:
         """Úvodní blok: seznam algoritmů, velký nadpis a krátký popis aplikace."""
         h = tk.Frame(self.stranka, bg=BARVY["bg"])
         h.pack(fill="x", pady=(44, 32))
+        # Malý šedý řádek „bubble · selection · …“ – klíče všech algoritmů
+        # spojené tečkou (" · ".join vloží " · " mezi každé dva prvky)
         tk.Label(h, text=" · ".join(a["klic"] for a in ALGORITMY_INFO), font=PISMO["mono_small"],
                  fg=BARVY["text3"], bg=BARVY["bg"]).pack(anchor="w")
         # Label umí jen jedno písmo, proto je nadpis složený ze tří Labelů
@@ -1303,8 +1637,10 @@ class SortApp:
         nadpis.pack(anchor="w", pady=(10, 10))
         for text, pismo in (("Jak rychle se ", "hero"), ("seřadí", "hero_italic"),
                             (" stejná data?", "hero")):
+            # anchor="s" = všechny tři části zarovnané na stejnou spodní linku
             tk.Label(nadpis, text=text, font=PISMO[pismo], fg=BARVY["ink"], bg=BARVY["bg"],
                      padx=0).pack(side="left", anchor="s")
+        # Krátký popis aplikace pod nadpisem (zalomí se po 620 px)
         tk.Label(h, text="Připravte data, vyberte algoritmy a změřte je. Třídí přímo funkce "
                          "ze souboru sort.py – každý krok si můžete přehrát v animaci.",
                  font=PISMO["body"], fg=BARVY["text2"], bg=BARVY["bg"], justify="left",
@@ -1318,26 +1654,32 @@ class SortApp:
         na (radek, sloupec) a vrátí se vstupní widget, aby z něj šlo číst.
         """
         f = tk.Frame(rodic, bg=BARVY["surface"])
+        # sticky="ew" = roztáhnout do šířky buňky (east-west).
+        # Levý sloupec má mezeru vpravo, pravý vlevo -> mezi nimi 12 px.
         f.grid(row=radek, column=sloupec, sticky="ew", pady=(0, 12),
                padx=(0, 6) if sloupec == 0 else (6, 0))
         tk.Label(f, text=popisek, font=PISMO["small"], fg=BARVY["text2"],
                  bg=BARVY["surface"]).pack(anchor="w", pady=(0, 4))
-        w = widget_fn(f)
+        w = widget_fn(f)                 # vytvoří vstup uvnitř rámečku f
         w.pack(fill="x")
         return w
 
     def _vstup_cislo(self, rodic, hodnota, od, do):
         """Číselné políčko se šipkami (Spinbox) s výchozí hodnotou."""
+        # from_ má podtržítko, protože `from` je v Pythonu klíčové slovo
+        # (from … import) a nesmí se použít jako jméno parametru.
         spin = tk.Spinbox(rodic, from_=od, to=do, font=PISMO["body"], relief="flat",
                           bg=BARVY["surface"], fg=BARVY["text"], buttonbackground=BARVY["surface"],
                           highlightthickness=1, highlightbackground=BARVY["border_strong"],
                           highlightcolor=BARVY["focus"], insertbackground=BARVY["text"], width=8)
         spin.delete(0, "end")            # Spinbox začíná hodnotou `od` – přepíšeme ji
-        spin.insert(0, str(hodnota))
+        spin.insert(0, str(hodnota))     # vložit výchozí hodnotu jako text
         return spin
 
     def _vyber(self, rodic, moznosti):
         """Rozbalovací seznam (jen výběr, nedá se do něj psát)."""
+        # moznosti = seznam dvojic (klíč, text); do seznamu dáme jen texty.
+        # `for _, t in moznosti` – klíč nepotřebujeme, proto `_`.
         cb = ttk.Combobox(rodic, values=[t for _, t in moznosti], state="readonly",
                           font=PISMO["body"])
         cb.current(0)                    # vybrat první možnost
@@ -1346,23 +1688,28 @@ class SortApp:
     def _karta_data(self, rodic):
         """Karta 01 Data: generátor, načtení souboru, ruční vstup a souhrn."""
         k = Karta(rodic, "01", "Data", "Vygenerujte je, načtěte ze souboru, nebo zadejte ručně.")
-        o = k.obsah
+        o = k.obsah                      # do obsahu karty skládáme všechny prvky
         # Čtyři políčka ve dvou sloupcích (uniform="p" = stejně široké sloupce)
         pole = tk.Frame(o, bg=BARVY["surface"])
         pole.pack(fill="x")
         pole.columnconfigure((0, 1), weight=1, uniform="p")
+        # Každé políčko: _pole(rodič, popisek, funkce vytvářející vstup, řádek, sloupec).
+        # lambda f: … = funkce, která dostane rámeček f a vytvoří v něm vstup.
+        # Vrácené vstupy si uložíme do self.…, aby z nich generuj() mohl číst.
         self.cb_typ = self._pole(pole, "Typ hodnot", lambda f: self._vyber(f, TYPY), 0, 0)
         self.cb_rozlozeni = self._pole(pole, "Rozložení", lambda f: self._vyber(f, ROZLOZENI), 0, 1)
         self.sp_pocet = self._pole(pole, "Počet prvků",
                                    lambda f: self._vstup_cislo(f, 1000, 2, MAX_PRVKU), 1, 0)
         self.sp_seed = self._pole(pole, "Seed", lambda f: self._vstup_cislo(f, 42, 0, 999999), 1, 1)
 
+        # Tlačítka „Generovat data“ a „Načíst .txt“ vedle sebe
         tlacitka = tk.Frame(o, bg=BARVY["surface"])
         tlacitka.pack(fill="x", pady=(4, 18))
         Tlacitko(tlacitka, "Generovat data", self.generuj, "primary").pack(side="left")
         Tlacitko(tlacitka, "Načíst .txt", self.nacti_soubor).pack(side="left", padx=8)
 
         # Oddělovač „—— nebo ručně ——“: čára, text, čára
+        # (čára = Frame vysoký 1 px, expand=True = obě čáry si rozdělí volné místo)
         oddelovac = tk.Frame(o, bg=BARVY["surface"])
         oddelovac.pack(fill="x", pady=(0, 10))
         tk.Frame(oddelovac, bg=BARVY["border"], height=1).pack(side="left", fill="x", expand=True)
@@ -1370,12 +1717,14 @@ class SortApp:
                  bg=BARVY["surface"], padx=10).pack(side="left")
         tk.Frame(oddelovac, bg=BARVY["border"], height=1).pack(side="left", fill="x", expand=True)
 
-        # Víceřádkové pole pro ruční zadání čísel
+        # Víceřádkové pole pro ruční zadání hodnot
+        # (insertbackground = barva blikajícího kurzoru, wrap="word" = zalamovat po slovech)
         self.txt_rucne = tk.Text(o, height=3, font=PISMO["mono"], relief="flat", wrap="word",
                                  bg=BARVY["surface"], fg=BARVY["text"], padx=10, pady=8,
                                  highlightthickness=1, highlightbackground=BARVY["border_strong"],
                                  highlightcolor=BARVY["focus"], insertbackground=BARVY["text"])
         self.txt_rucne.pack(fill="x")
+        # Pod polem nápověda vlevo a tlačítko „Použít“ vpravo
         radek = tk.Frame(o, bg=BARVY["surface"])
         radek.pack(fill="x", pady=(8, 14))
         tk.Label(radek, text="Oddělte středníkem nebo novým řádkem (čísla i mezerou).",
@@ -1387,23 +1736,27 @@ class SortApp:
         self.souhrn.pack(fill="x")
         tk.Label(self.souhrn, text="Zatím žádná data.", font=PISMO["small"], fg=BARVY["text3"],
                  bg=BARVY["surface"]).pack(side="left")
-        return k
+        return k                         # _postav_okno kartu umístí do mřížky
 
     def _karta_algoritmy(self, rodic):
         """Karta 02 Algoritmy: karty k výběru, opakování a tlačítka akcí."""
         k = Karta(rodic, "02", "Algoritmy", "Pro porovnání vyberte libovolné, pro animaci právě jeden.")
         o = k.obsah
+        # Mřížka 2 sloupce × 3 řádky s kartami algoritmů
         mrizka = tk.Frame(o, bg=BARVY["surface"])
         mrizka.pack(fill="x")
         mrizka.columnconfigure((0, 1), weight=1, uniform="a")
-        self.karty_algo = []
+        self.karty_algo = []             # všechny karty – podle nich zjistíme výběr
         for i, info in enumerate(ALGORITMY_INFO):
+            # Každá karta dostane funkci _obnov_tlacitka, kterou zavolá po kliknutí
             karta = AlgoKarta(mrizka, info, self._obnov_tlacitka)
             # i // 2 = řádek, i % 2 = sloupec -> karty po dvou vedle sebe
+            # (% = zbytek po dělení: 0, 1, 0, 1 …)
             karta.grid(row=i // 2, column=i % 2, sticky="nsew",
                        padx=(0, 5) if i % 2 == 0 else (5, 0), pady=5)
             self.karty_algo.append(karta)
 
+        # Řádek: Vybrat vše / Zrušit výběr vlevo, počet opakování vpravo
         radek = tk.Frame(o, bg=BARVY["surface"])
         radek.pack(fill="x", pady=(12, 14))
         Tlacitko(radek, "Vybrat vše", lambda: self._vyber_vse(True), "ghost",
@@ -1417,6 +1770,7 @@ class SortApp:
         tk.Label(radek, text="Opakování", font=PISMO["small"], fg=BARVY["text2"],
                  bg=BARVY["surface"]).pack(side="right", padx=8)
 
+        # Hlavní akce: Porovnat (+ Zastavit během měření) a Animovat
         akce = tk.Frame(o, bg=BARVY["surface"])
         akce.pack(fill="x")
         self.btn_porovnat = Tlacitko(akce, "Porovnat", self.porovnej, "primary", padx=22, pady=9)
@@ -1443,7 +1797,7 @@ class SortApp:
         self.panely = tk.Frame(k.obsah, bg=BARVY["surface"])
         self.panely.pack(fill="both", expand=True)
         self.panely.columnconfigure(0, weight=1)
-        self.panely.rowconfigure(0, weight=1, minsize=300)
+        self.panely.rowconfigure(0, weight=1, minsize=300)   # panel aspoň 300 px vysoký
 
         # Panel 1: tabulka časů
         # Dokud se nic neměřilo, ukazuje „prázdný stav“ s nápovědou;
@@ -1456,6 +1810,7 @@ class SortApp:
         tk.Label(self.prazdno, text="Připravte data, vyberte algoritmy a spusťte porovnání. "
                                     "Výsledky se ověří proti vestavěné funkci sorted().",
                  font=PISMO["small"], fg=BARVY["text2"], bg=BARVY["surface2"]).pack(pady=(0, 100))
+        # Tabulka zatím jen vznikne – zobrazí se (pack) až při měření
         self.tabulka = tk.Frame(self.panel_casy, bg=BARVY["surface"])
         self.prazdno.pack(fill="both", expand=True)
 
@@ -1464,12 +1819,14 @@ class SortApp:
         self.seznam_vstup = SeznamHodnot(self.panel_vstup)
         self.seznam_vstup.pack(fill="both", expand=True)
 
-        # Panel 3: seřazená čísla (výstup z sort.py)
+        # Panel 3: seřazené hodnoty (výstup z sort.py)
         self.panel_serazeno = tk.Frame(self.panely, bg=BARVY["surface"])
+        # Ovládání nahoře: výběr algoritmu, Seřadit, Kopírovat
         ovl = tk.Frame(self.panel_serazeno, bg=BARVY["surface"])
         ovl.pack(fill="x", pady=(0, 10))
         tk.Label(ovl, text="Seřadit algoritmem", font=PISMO["small"], fg=BARVY["text2"],
                  bg=BARVY["surface"]).pack(side="left", padx=(0, 8))
+        # Rozbalovací seznam s názvy algoritmů (ve stejném pořadí jako ALGORITMY_INFO)
         self.cb_serad = ttk.Combobox(ovl, values=[a["nazev"] for a in ALGORITMY_INFO],
                                      state="readonly", font=PISMO["body"], width=16)
         self.cb_serad.current(0)
@@ -1481,6 +1838,7 @@ class SortApp:
         self.btn_kopirovat = Tlacitko(ovl, "Kopírovat", self.kopiruj_serazeno, "ghost",
                                       padx=12, pady=4)
         self.btn_kopirovat.pack(side="right")
+        # Řádek čipů s informací o seřazení (plní _zobraz_serazeno)
         self.info_serazeno = tk.Frame(self.panel_serazeno, bg=BARVY["surface"])
         self.info_serazeno.pack(fill="x", pady=(0, 10))
         self.seznam_serazeno = SeznamHodnot(self.panel_serazeno, vyska=10)
@@ -1498,19 +1856,21 @@ class SortApp:
         self.btn_export = Tlacitko(spodek, "Export CSV", self.export_csv, padx=12, pady=4)
         self.btn_export.pack(side="right")
         # zobrazí se až po dokončeném měření (_konec_mereni)
+        # lambda: self.zalozky.vyber(2) = přepnout na třetí záložku (Seřazeno)
         self.btn_jdi_serazeno = Tlacitko(spodek, "Zobrazit seřazené hodnoty",
                                          lambda: self.zalozky.vyber(2), "ghost", padx=12, pady=4)
 
         # záložky až nakonec – při vytvoření hned přepnou na první panel
         # (kdyby vznikly dřív, _prepni_panel by sahal na panely, které ještě neexistují)
         self.zalozky = Zalozky(k.hlavicka, ["Časy", "Vstup", "Seřazeno"], self._prepni_panel)
-        self.zalozky.pack(side="right")
+        self.zalozky.pack(side="right")  # záložky vpravo v hlavičce karty
         return k
 
     def _paticka(self):
         """Patička: stavový řádek vlevo (co se právě stalo) a limity vpravo."""
         p = tk.Frame(self.stranka, bg=BARVY["bg"])
         p.pack(fill="x", pady=(18, 28))
+        # Stavový řádek – jeho text mění metoda stav()
         self.lbl_stav = tk.Label(p, text="Připraveno. Vygenerujte data a vyberte algoritmy.",
                                  font=PISMO["small"], fg=BARVY["text2"], bg=BARVY["bg"], anchor="w")
         self.lbl_stav.pack(side="left")
@@ -1524,12 +1884,13 @@ class SortApp:
 
     def _vybrane(self):
         """Seznam klíčů vybraných algoritmů, např. ["bubble", "quick"]."""
+        # Projde všechny karty a vezme klíč jen u těch, které jsou vybrané
         return [k.klic for k in self.karty_algo if k.vybrano]
 
     def _vyber_vse(self, vybrat):
         """Tlačítka „Vybrat vše“ (True) a „Zrušit výběr“ (False)."""
         for k in self.karty_algo:
-            k.nastav(vybrat)
+            k.nastav(vybrat)             # nastav() nevolá pri_zmene -> tlačítka obnovíme jednou
         self._obnov_tlacitka()
 
     def _obnov_tlacitka(self):
@@ -1539,8 +1900,9 @@ class SortApp:
         měření), takže tlačítka nikdy nedovolí nesmyslnou akci – např.
         porovnat bez dat nebo animovat dva algoritmy najednou.
         """
-        vybrane = len(self._vybrane())
-        ma_data = bool(self.hodnoty)
+        vybrane = len(self._vybrane())   # kolik algoritmů je vybraných
+        ma_data = bool(self.hodnoty)     # prázdný seznam = False, jinak True
+        # Každé tlačítko dostane True/False podle podmínky (and = musí platit vše)
         self.btn_porovnat.nastav(povoleno=not self.bezi and ma_data and vybrane > 0)
         self.btn_animovat.nastav(povoleno=not self.bezi and ma_data and vybrane == 1)
         self.btn_serad.nastav(povoleno=not self.bezi and ma_data)
@@ -1548,11 +1910,13 @@ class SortApp:
         self.btn_export.nastav(povoleno=bool(self.vysledky) and not self.bezi)
         if self.bezi:
             # během měření se ukáže Zastavit hned za tlačítkem Porovnat
+            # (after=… = zabalit hned za daný widget)
             self.btn_stop.nastav(povoleno=True)
             self.btn_stop.pack(side="left", padx=(8, 0), after=self.btn_porovnat)
         else:
             self.btn_stop.pack_forget()       # pack_forget = schovat (widget dál existuje)
         # nápověda, proč tlačítka nejsou aktivní
+        # (if / elif / else – použije se první podmínka, která platí)
         if self.bezi:
             napoveda = "Měření probíhá…"
         elif not ma_data:
@@ -1562,11 +1926,13 @@ class SortApp:
         elif vybrane > 1:
             napoveda = "Animace je dostupná pro právě jeden vybraný algoritmus."
         else:
-            napoveda = ""
+            napoveda = ""                # vše v pořádku, nápověda není potřeba
         self.lbl_napoveda.config(text=napoveda)
 
     def _prepni_panel(self, index):
         """Zobrazí panel podle záložky: 0 = Časy, 1 = Vstup, 2 = Seřazeno."""
+        # Z n-tice tří panelů vybereme ten s daným indexem a tkraise() ho
+        # vytáhne nad ostatní (leží všechny ve stejné buňce mřížky).
         (self.panel_casy, self.panel_vstup, self.panel_serazeno)[index].tkraise()
 
     # --- příprava dat --------------------------------------------------------------
@@ -1578,22 +1944,25 @@ class SortApp:
         zapíše zpět do políčka, aby uživatel viděl, s čím se počítá.
         """
         try:
-            hodnota = int(spin.get())
-        except ValueError:
+            hodnota = int(spin.get())    # get() vrátí text políčka, int() z něj udělá číslo
+        except ValueError:               # text není celé číslo
             hodnota = vychozi
-        hodnota = min(max(hodnota, od), do)
-        spin.delete(0, "end")
-        spin.insert(0, str(hodnota))
+        hodnota = min(max(hodnota, od), do)   # sevřít do rozsahu od–do
+        spin.delete(0, "end")            # smazat starý text…
+        spin.insert(0, str(hodnota))     # …a zapsat opravenou hodnotu
         return hodnota
 
     def generuj(self):
         """Tlačítko „Generovat data“."""
+        # Přečíst a ohlídat čísla z políček (výchozí hodnota, minimum, maximum)
         pocet = self._cislo(self.sp_pocet, 1000, 2, MAX_PRVKU)
         seed = self._cislo(self.sp_seed, 0, 0, 999999)
         typ = TYPY[self.cb_typ.current()][0]           # klíč vybraného typu, např. "float"
         typ = "integer" if typ == "auto" else typ      # u generování znamená „auto“ celá čísla
+        # ROZLOZENI[i] je dvojice (klíč, název) – rozbalíme ji do dvou proměnných
         klic, nazev = ROZLOZENI[self.cb_rozlozeni.current()]
         # zdroj pro čip souhrnu: „náhodně, seed 42“ (text před pomlčkou, malými písmeny)
+        # split(' – ')[0] = část textu před pomlčkou („Vzestupně – nejlepší případ“ -> „Vzestupně“)
         self._nastav_data(generuj_hodnoty(typ, pocet, seed, klic), typ,
                           f"{nazev.split(' – ')[0].lower()}, seed {seed}")
 
@@ -1610,17 +1979,25 @@ class SortApp:
             title="Načíst data ze souboru", filetypes=[("Textový soubor", "*.txt")])
         if not cesta:                    # uživatel dialog zavřel bez výběru
             return
+        # try / except / else:
+        #   try    – zkusit soubor otevřít a rozpoznat
+        #   except – co dělat při chybě (každý druh chyby zvlášť)
+        #   else   – provede se jen tehdy, když v try žádná chyba nenastala
         try:
             # utf-8-sig zvládne i soubory s neviditelnou značkou BOM na začátku
             # (ukládá ji např. Poznámkový blok ve Windows)
+            # with open(...) as f: soubor se po skončení bloku sám zavře.
             with open(cesta, encoding="utf-8-sig") as f:
-                typ, hodnoty, upozorneni = rozpoznej_hodnoty(f.read())
+                typ, hodnoty, upozorneni = rozpoznej_hodnoty(f.read())   # f.read() = celý obsah
         # UnicodeDecodeError je podtřída ValueError, proto musí být zachycena dřív
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError):    # soubor nejde otevřít / není to text
             chyba = "Soubor se nepodařilo přečíst (není to textový soubor?)."
         except ValueError as e:          # chybná data – zpráva z rozpoznej_hodnoty
             chyba = str(e)
         else:
+            # Všechno v pořádku -> otevřít okno kontroly. Data se zatím
+            # NEPOUŽIJÍ, o tom rozhodne uživatel v okně (Ano / jiný / Zrušit).
+            # rsplit("/", 1)[-1] = část cesty za posledním lomítkem = název souboru
             OknoKontroly(self, cesta.rsplit("/", 1)[-1], typ, hodnoty, upozorneni)  # jen název souboru
             return
         # Stavový řádek je až dole pod výsledky, chybu proto ukážeme v okně
@@ -1630,6 +2007,7 @@ class SortApp:
         """Tlačítko „Použít“ u ručního vstupu."""
         try:
             # "1.0" až "end" = celý obsah textového pole
+            # (Text počítá pozice jako "řádek.znak", řádky od 1, znaky od 0)
             typ, hodnoty, upozorneni = rozpoznej_hodnoty(self.txt_rucne.get("1.0", "end"))
         except ValueError as chyba:
             self.stav(str(chyba))
@@ -1638,7 +2016,7 @@ class SortApp:
         # Rozpoznaný typ uvidí uživatel v čipu pod polem (např. „celá čísla“)
         self._nastav_data(hodnoty, typ, "ruční vstup")
         if upozorneni:
-            self.stav(upozorneni)
+            self.stav(upozorneni)        # přepíše výchozí zprávu z _nastav_data
 
     def _nastav_data(self, hodnoty, typ, zdroj):
         """Společný konec všech tří způsobů přípravy dat.
@@ -1647,12 +2025,13 @@ class SortApp:
         vypíše souhrn a vstupní hodnoty a obnoví tlačítka.
         """
         self.hodnoty, self.typ = hodnoty, typ
-        self.vysledky, self.serazeno = {}, None
+        self.vysledky, self.serazeno = {}, None   # staré výsledky k novým datům nepatří
         for w in self.souhrn.winfo_children():    # smazat staré čipy
             w.destroy()
+        # Tři nové čipy: počet hodnot, typ a zdroj (soubor / ruční vstup / generátor)
         for text in (f"{cesky_pocet(len(hodnoty))} hodnot", popis_typu(typ), zdroj):
             cip(self.souhrn, text).pack(side="left", padx=(0, 6))
-        self.seznam_vstup.zobraz(hodnoty, typ)
+        self.seznam_vstup.zobraz(hodnoty, typ)    # záložka Vstup
         self._vycisti_vysledky()
         self._vycisti_serazeno()
         self._obnov_tlacitka()
@@ -1679,12 +2058,14 @@ class SortApp:
         t = self.tabulka
         t.columnconfigure(0, weight=1)            # sloupec s názvem zabere volné místo
         # záhlaví: (text, zarovnání) – "w" = vlevo (west), "e" = vpravo (east)
+        # enumerate dává číslo sloupce `sl`, dvojici rozbalíme do (text, zarovnani)
         for sl, (text, zarovnani) in enumerate((("Algoritmus", "w"), ("Medián", "e"),
                                                 ("Minimum", "e"), ("Maximum", "e"), ("Stav", "w"))):
             tk.Label(t, text=text, font=PISMO["tiny"], fg=BARVY["text3"], bg=BARVY["surface"],
                      anchor=zarovnani).grid(row=0, column=sl, sticky="ew", padx=12, pady=(0, 8))
         for i, klic in enumerate(klice):
-            r = 2 * i + 1
+            r = 2 * i + 1                 # řádek s čárou; data jsou o řádek níž (r + 1)
+            # Tenká šedá čára přes všech 5 sloupců (columnspan=5)
             tk.Frame(t, bg=BARVY["border"], height=1).grid(row=r, column=0, columnspan=5, sticky="ew")
             # Buňka s názvem: název, (skrytý) štítek „nejrychlejší“ a pruh relativní rychlosti
             jmeno = tk.Frame(t, bg=BARVY["surface"])
@@ -1694,23 +2075,27 @@ class SortApp:
             tk.Label(horni, text=INFO[klic]["nazev"], font=PISMO["bold"], fg=BARVY["text"],
                      bg=BARVY["surface"]).pack(side="left")
             odznak_best = stitek(horni, "nejrychlejší", "best")   # zobrazí se jen u vítěze
+            # Pruh relativní rychlosti: plátno 160×4 px, šedá dráha + barevný pruh
             pruh = tk.Canvas(jmeno, width=160, height=4, bg=BARVY["surface"], highlightthickness=0)
             pruh.pack(anchor="w", pady=(6, 0))
             pruh.create_rectangle(0, 0, 160, 4, fill=BARVY["sunken"], outline="")   # šedá dráha
             bar = pruh.create_rectangle(0, 0, 0, 4, fill=BARVY["bar"], outline="")  # pruh, zatím 0 px
-            bunky = []
+            bunky = []                    # tři Labely s časy
             for sl in (1, 2, 3):          # medián, minimum, maximum
+                # medián (sl == 1) tmavším písmem, min/max světlejším
                 lbl = tk.Label(t, text="–", font=PISMO["mono"], bg=BARVY["surface"], anchor="e",
                                fg=BARVY["text"] if sl == 1 else BARVY["text2"], width=10)
                 lbl.grid(row=r + 1, column=sl, sticky="e", padx=12)
                 bunky.append(lbl)
+            # Stavový štítek v posledním sloupci, na začátku šedé „Čeká“
             odznak = stitek(t, "Čeká", "wait", "small")
             odznak.grid(row=r + 1, column=4, sticky="w", padx=12)
             # Uložíme si widgety řádku, abychom je později mohli měnit podle klíče
+            # (delka = aktuální délka pruhu 0–1, z ní se animuje na novou)
             self.radky[klic] = dict(bunky=bunky, odznak=odznak, pruh=pruh, bar=bar,
                                     best=odznak_best, delka=0.0)
-        self.prazdno.pack_forget()
-        self.tabulka.pack(fill="x")
+        self.prazdno.pack_forget()        # schovat „Zatím nic nebylo změřeno“
+        self.tabulka.pack(fill="x")       # a ukázat tabulku
 
     def _stav_radku(self, klic, text, ton):
         """Změní stavový štítek řádku (Čeká / Běží… / Ověřeno / Chyba / Zastaveno)."""
@@ -1719,19 +2104,25 @@ class SortApp:
 
     def _vypln_radek(self, klic, v):
         """Doplní do řádku naměřené časy a výsledek kontroly."""
+        # v = slovník {"median": …, "min": …, "max": …, "ok": True/False}
         radek = self.radky[klic]
+        # zip() spáruje tři Labely se třemi časy: (lbl1, median), (lbl2, min), (lbl3, max)
         for lbl, hodnota in zip(radek["bunky"], (v["median"], v["min"], v["max"])):
             lbl.config(text=formatuj_ms(hodnota))
+        # Výsledek kontroly proti sorted(): zelené „Ověřeno“, nebo červené „Chyba“
         self._stav_radku(klic, "Ověřeno" if v["ok"] else "Chyba", "ok" if v["ok"] else "err")
-        self._relativni_pruhy()
+        self._relativni_pruhy()          # přepočítat délky pruhů všech řádků
 
     def _relativni_pruhy(self):
         # délka = log(medián) / log(nejpomalejší medián), aby byly vidět i rychlé
         # Bez logaritmu by u 1500 ms vs. 5 ms byl rychlý pruh téměř neviditelný.
         # +1 zajistí, že log10 nedostane číslo menší než 1 (výsledek by byl záporný).
         maximum = max(math.log10(v["median"] + 1) for v in self.vysledky.values())
+        # .items() dává dvojice (klíč, hodnota) ze slovníku výsledků
         for klic, v in self.vysledky.items():
             radek = self.radky[klic]
+            # Cílová délka 0–1; aspoň 0.02, aby byl i nejrychlejší pruh vidět.
+            # Když je maximum 0 (všechny časy ~0 ms), mají všechny plnou délku.
             cil = max(0.02, math.log10(v["median"] + 1) / maximum) if maximum > 0 else 1
             od = radek["delka"]               # dosavadní délka (0–1)
             radek["delka"] = cil
@@ -1740,8 +2131,10 @@ class SortApp:
             # Výchozí parametry (radek=radek, …) zamrazí hodnoty pro tento
             # průchod cyklem – jinak by všechny animace použily poslední řádek.
             def krok(t, radek=radek, od=od, cil=cil):
+                # t jde od 0 do 1; od + (cil - od) * t = délka mezi od a cil.
+                # coords() změní souřadnice obdélníku – šířka = 160 px × délka.
                 radek["pruh"].coords(radek["bar"], 0, 0, 160 * (od + (cil - od) * t), 4)
-            animuj(radek["pruh"], 450, krok)
+            animuj(radek["pruh"], 450, krok)     # animace trvá 450 ms
 
     def _nejrychlejsi(self):
         """Najde nejrychlejší správně třídící algoritmus a vrátí jeho klíč.
@@ -1750,20 +2143,22 @@ class SortApp:
         vypíše, kolikrát je rychlejší než nejpomalejší.
         """
         # seřazené dvojice (medián, klíč) – první je nejrychlejší, poslední nejpomalejší
+        # (if v["ok"] = počítají se jen algoritmy, které seřadily správně)
         platne = sorted((v["median"], k) for k, v in self.vysledky.items() if v["ok"])
         for radek in self.radky.values():    # nejdřív zrušit staré zvýraznění
             radek["best"].pack_forget()
             radek["pruh"].itemconfig(radek["bar"], fill=BARVY["bar"])
-        if not platne:
+        if not platne:                       # nic se neměřilo správně
             self.lbl_nejrychlejsi.config(text="")
             return None
-        median, klic = platne[0]
+        median, klic = platne[0]             # první dvojice = nejrychlejší
         text = f"Nejrychlejší: {INFO[klic]['nazev']} · medián {formatuj_ms(median)}"
         if len(platne) > 1:                  # zvýrazňovat má smysl jen při porovnání více algoritmů
             radek = self.radky[klic]
-            radek["best"].pack(side="left", padx=(8, 0))
-            radek["pruh"].itemconfig(radek["bar"], fill=BARVY["bar_done"])
-            nejpomalejsi_med, nejpomalejsi = platne[-1]
+            radek["best"].pack(side="left", padx=(8, 0))               # ukázat štítek „nejrychlejší“
+            radek["pruh"].itemconfig(radek["bar"], fill=BARVY["bar_done"])   # zelený pruh
+            nejpomalejsi_med, nejpomalejsi = platne[-1]               # [-1] = poslední prvek
+            # round(pomalý / rychlý) = kolikrát je rychlejší (zaokrouhleno)
             text += f" · {round(nejpomalejsi_med / median)}× rychlejší než {INFO[nejpomalejsi]['nazev']}"
         self.lbl_nejrychlejsi.config(text=text)
         return klic
@@ -1772,20 +2167,24 @@ class SortApp:
     def porovnej(self):
         """Tlačítko „Porovnat“ – připraví tabulku a spustí měřicí vlákno."""
         klice = self._vybrane()
+        # Pojistka: už se měří / nic není vybrané / nejsou data -> nic nedělat
         if self.bezi or not klice or not self.hodnoty:
             return
         opakovani = self._cislo(self.sp_opakovani, 3, 1, 10)
         self.bezi = True
         self.stop.clear()                # shodit vlajku z případného minulého zastavení
         self.vysledky = {}
-        self._postav_tabulku(klice)
+        self._postav_tabulku(klice)      # prázdná tabulka s „Čeká“ u každého algoritmu
         self.lbl_nejrychlejsi.config(text="")
         self.btn_jdi_serazeno.pack_forget()
         self.zalozky.vyber(0)            # přepnout na záložku Časy
-        self._obnov_tlacitka()
+        self._obnov_tlacitka()           # vypne Porovnat, ukáže Zastavit
         self.stav("Porovnávám algoritmy v Pythonu…")
         # daemon=True = vlákno se ukončí samo, když uživatel zavře aplikaci.
         # list(self.hodnoty) = vlákno dostane vlastní kopii dat.
+        # target = funkce, kterou vlákno spustí; args = její parametry.
+        # start() vlákno rozběhne a tato metoda hned pokračuje dál
+        # (nečeká na konec měření) – okno tak zůstane ovladatelné.
         threading.Thread(target=self._vlakno_mereni, daemon=True,
                          args=(klice, list(self.hodnoty), opakovani)).start()
 
@@ -1798,16 +2197,17 @@ class SortApp:
           ("vysledek", klic, {...})  – naměřené časy jednoho algoritmu
           ("konec", zastaveno)       – měření skončilo (True = zastavil uživatel)
         """
+        # TATO METODA BĚŽÍ VE VEDLEJŠÍM VLÁKNĚ – nesmí sáhnout na žádný widget.
         ocekavane = sorted(data)          # správný výsledek pro kontrolu
         for klic in klice:
             if self.stop.is_set():        # uživatel klikl na Zastavit
                 self.fronta.put(("stav", klic, "Zastaveno", "wait"))
-                continue
+                continue                  # continue = přeskočit na další algoritmus
             self.fronta.put(("stav", klic, "Běží…", "run"))
-            casy, ok = [], True
+            casy, ok = [], True           # naměřené časy a výsledek kontroly
             for _ in range(opakovani):
                 if self.stop.is_set():
-                    break
+                    break                 # break = ukončit tento vnitřní cyklus
                 kopie = list(data)        # každý běh dostane neseřazenou kopii
                 start = time.perf_counter()
                 sort.ALGORITMY[klic](kopie)        # SAMOTNÉ TŘÍDĚNÍ – funkce ze sort.py
@@ -1820,12 +2220,14 @@ class SortApp:
             # počítač zrovna dělá něco jiného) výsledek nezkreslí.
             self.fronta.put(("vysledek", klic, {"median": statistics.median(casy),
                                                 "min": min(casy), "max": max(casy), "ok": ok}))
+        # Na konci vždy zpráva „konec“ – hlavní okno pak uklidí a vyhodnotí
         self.fronta.put(("konec", self.stop.is_set()))
 
     def _vlakno_serazeni(self, klic, data):
         """Ve vlákně seřadí kopii dat a výsledek pošle do fronty (záložka Seřazeno)."""
         kopie = list(data)
-        sort.ALGORITMY[klic](kopie)
+        sort.ALGORITMY[klic](kopie)       # seřadí kopii přímo na místě (in-place)
+        # Zpráva: klíč, seřazené pole a jestli odpovídá vestavěné sorted()
         self.fronta.put(("serazeno", klic, kopie, kopie == sorted(data)))
 
     def _zpracuj_frontu(self):
@@ -1836,27 +2238,28 @@ class SortApp:
         fronta prázdná – tím cyklus while skončí.
         """
         try:
-            while True:
+            while True:                   # nekonečný cyklus – ukončí ho výjimka queue.Empty
                 zprava = self.fronta.get_nowait()
-                druh = zprava[0]
+                druh = zprava[0]          # první prvek n-tice = druh zprávy
                 if druh == "stav":
                     self._stav_radku(*zprava[1:])          # *zprava[1:] = rozbalí zbytek n-tice do parametrů
                 elif druh == "vysledek":
-                    self.vysledky[zprava[1]] = zprava[2]
+                    self.vysledky[zprava[1]] = zprava[2]   # uložit výsledek pod klíčem algoritmu
                     self._vypln_radek(zprava[1], zprava[2])
                 elif druh == "konec":
                     self._konec_mereni(zprava[1])
                 elif druh == "serazeno":
                     self._zobraz_serazeno(*zprava[1:])
         except queue.Empty:
-            pass
+            pass                          # fronta je prázdná – pro teď hotovo
         self.root.after(40, self._zpracuj_frontu)          # naplánovat další kontrolu
 
     def _konec_mereni(self, zastaveno):
         """Úklid po skončení měření (přišla zpráva „konec“)."""
         self.bezi = False
-        nejrychlejsi = self._nejrychlejsi()
+        nejrychlejsi = self._nejrychlejsi()   # klíč vítěze, nebo None
         self._obnov_tlacitka()
+        # Zpráva podle toho, jestli měření doběhlo, nebo ho uživatel zastavil
         self.stav("Porovnání bylo zastaveno." if zastaveno
                   else "Hotovo. Výsledky jsou ověřené proti funkci sorted().")
         if nejrychlejsi and not zastaveno:
@@ -1867,7 +2270,7 @@ class SortApp:
     def zastav_mereni(self):
         """Tlačítko „Zastavit“ – nastaví vlajku, vlákno ji zkontroluje
         před dalším během a skončí. Právě běžící třídění se dokončí."""
-        self.stop.set()
+        self.stop.set()                   # „vztyčit vlajku“ – vlákno ji uvidí
         self.btn_stop.nastav(povoleno=False)
 
     # --- záložka Seřazeno ----------------------------------------------------------
@@ -1878,7 +2281,7 @@ class SortApp:
         tk.Label(self.info_serazeno, text="Zvolte algoritmus a klikněte na Seřadit – nebo spusťte "
                                           "porovnání, výsledek nejrychlejšího se zobrazí sám.",
                  font=PISMO["small"], fg=BARVY["text3"], bg=BARVY["surface"]).pack(side="left")
-        self.seznam_serazeno.zobraz([], self.typ)
+        self.seznam_serazeno.zobraz([], self.typ)    # prázdný seznam
 
     def zobraz_serazeno(self, klic):
         """Spustí seřazení dat algoritmem `klic` (tlačítko Seřadit nebo konec měření)."""
@@ -1886,6 +2289,7 @@ class SortApp:
             self.stav("Nejdřív připravte data v kroku 01.")
             return
         # nastavit rozbalovací seznam na použitý algoritmus
+        # (index(klic) = na kolikáté pozici je klíč v seznamu klíčů)
         self.cb_serad.current([a["klic"] for a in ALGORITMY_INFO].index(klic))
         self.btn_serad.nastav(povoleno=False)    # znovu se zapne v _obnov_tlacitka
         # i jedno seřazení pomalým algoritmem může trvat – proto také vlákno
@@ -1897,6 +2301,7 @@ class SortApp:
         self.serazeno = {"klic": klic, "pole": pole, "ok": ok}
         for w in self.info_serazeno.winfo_children():
             w.destroy()
+        # Zelený / červený štítek podle kontroly proti sorted()
         stitek(self.info_serazeno, "Ověřeno proti sorted()" if ok else "Chyba – neodpovídá sorted()",
                "ok" if ok else "err", "small").pack(side="left", padx=(0, 6))
         # pole je seřazené, takže nejmenší hodnota je první a největší poslední
@@ -1905,7 +2310,7 @@ class SortApp:
                      f"největší {formatuj_hodnotu(pole[-1], self.typ)}"):
             cip(self.info_serazeno, text).pack(side="left", padx=(0, 6))
         self.seznam_serazeno.zobraz(pole, self.typ)
-        self._obnov_tlacitka()
+        self._obnov_tlacitka()           # zapne Seřadit a Kopírovat
         self.stav(f"Seřazené hodnoty ({INFO[klic]['nazev']}) jsou v záložce „Seřazeno“.")
 
     def kopiruj_serazeno(self):
@@ -1914,7 +2319,8 @@ class SortApp:
         if not self.serazeno:
             return
         oddelovac = "\n" if self.typ == "text" else " "
-        self.root.clipboard_clear()
+        self.root.clipboard_clear()       # vyprázdnit schránku…
+        # …a vložit všechny hodnoty jako jeden text spojený oddělovačem
         self.root.clipboard_append(oddelovac.join(formatuj_hodnotu(v, self.typ)
                                                   for v in self.serazeno["pole"]))
         self.stav("Seřazené hodnoty jsou zkopírované do schránky.")
@@ -1924,6 +2330,7 @@ class SortApp:
         """Tlačítko „Export CSV“ – uloží tabulku výsledků do souboru."""
         if not self.vysledky:
             return
+        # Systémové okno „Uložit jako“ s předvyplněným názvem souboru
         cesta = filedialog.asksaveasfilename(title="Uložit výsledky", defaultextension=".csv",
                                              initialfile="porovnani-razeni.csv",
                                              filetypes=[("CSV", "*.csv")])
@@ -1932,15 +2339,18 @@ class SortApp:
         try:
             # utf-8-sig + středník = Excel otevře soubor správně i s diakritikou
             # newline="" = modul csv si konce řádků řídí sám (jinak prázdné řádky)
+            # "w" = otevřít pro zápis (existující soubor se přepíše)
             with open(cesta, "w", newline="", encoding="utf-8-sig") as f:
                 zapis = csv.writer(f, delimiter=";")
                 zapis.writerow(["Algoritmus", "Medián (ms)", "Minimum (ms)", "Maximum (ms)", "Stav"])
                 for info in ALGORITMY_INFO:          # pořadí řádků jako v rozhraní
+                    # .get() vrátí None, když se algoritmus neměřil (místo chyby)
                     v = self.vysledky.get(info["klic"])
                     if v:                            # jen algoritmy, které se měřily
+                        # časy na 4 desetinná místa ({…:.4f})
                         zapis.writerow([info["nazev"], f"{v['median']:.4f}", f"{v['min']:.4f}",
                                         f"{v['max']:.4f}", "Ověřeno" if v["ok"] else "Chyba"])
-        except OSError:
+        except OSError:                  # např. složka bez práva zápisu
             self.stav("CSV soubor se nepodařilo uložit.")
             return
         self.stav("CSV soubor byl uložen.")
@@ -1948,6 +2358,7 @@ class SortApp:
     def animuj(self):
         """Tlačítko „Animovat“ – nechá sort.py zaznamenat kroky a otevře okno animace."""
         klice = self._vybrane()
+        # Animovat jde jen přesně jeden algoritmus a jen když jsou data
         if len(klice) != 1 or not self.hodnoty:
             return
         vzorek, poznamka = self.hodnoty, f"{len(self.hodnoty)} hodnot"
@@ -1960,6 +2371,7 @@ class SortApp:
         snimky = []
         # Předáním seznamu `snimky` jako parametru `kroky` zapneme v sort.py
         # záznam: algoritmus do něj při třídění připíše každý krok.
+        # list(vzorek) = kopie, původní data zůstanou neseřazená.
         sort.ALGORITMY[klice[0]](list(vzorek), snimky)     # sort.py zaznamená každý krok
         self.stav(f"Animace připravena: {cesky_pocet(len(snimky))} kroků.")
         OknoAnimace(self, INFO[klice[0]], snimky, self.typ, poznamka)
@@ -1973,10 +2385,12 @@ def main():
     """Vytvoří okno, připraví písma, postaví aplikaci a spustí hlavní smyčku."""
     root = tk.Tk()           # hlavní okno Tkinteru
     priprav_pisma(root)      # písma až po vytvoření okna (dřív je Tk nezná)
-    SortApp(root)
+    SortApp(root)            # postaví celé rozhraní do okna root
     root.mainloop()          # smyčka událostí – běží, dokud uživatel okno nezavře
 
 
 # Blok se provede jen při spuštění `python3 app.py`, ne při importu souboru.
+# (__name__ je "__main__" jen u souboru, který byl spuštěn přímo; při
+# `import app` – např. v testech – má hodnotu "app" a okno se neotevře.)
 if __name__ == "__main__":
     main()
