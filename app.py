@@ -19,11 +19,14 @@ JAK JE SOUBOR USPOŘÁDANÝ (shora dolů):
     1. Vzhled          – barvy (BARVY, TONY) a písma (PISMO).
     2. Popis algoritmů – texty do rozhraní (název, štítky, vysvětlení).
                          Kód algoritmů je v sort.py, tady je jen „cedulka“.
-    3. Data            – generování náhodných dat, načtení ze souboru /
-                         ručního vstupu a převod hodnot na text.
+    3. Data            – generování náhodných dat, rozpoznání typu dat
+                         ze souboru / ručního vstupu (celá a desetinná
+                         čísla, data, text) a převod hodnot na text.
     4. Stavební prvky  – vlastní tlačítko, karta, zaškrtávací karta
                          algoritmu, záložky, seznam hodnot, posuvník.
-    5. OknoAnimace     – samostatné okno, které přehrává kroky třídění.
+    5. Modální okna    – Dialog (společný základ), OknoKontroly (co se
+                         načetlo ze souboru a jestli to třídit) a
+                         OknoAnimace (přehrává kroky třídění).
     6. SortApp         – hlavní okno: skládá prvky dohromady a obsluhuje
                          tlačítka (generuj, porovnej, animuj, export …).
     7. main()          – vytvoří okno a spustí aplikaci.
@@ -253,88 +256,101 @@ def generuj_hodnoty(typ, pocet, seed, rozlozeni):
     return hodnoty
 
 
-def nacti_hodnoty(text):
-    """Převede text z ručního vstupu na (typ, hodnoty).
-    Při chybě vyhodí ValueError s českou zprávou.
+# Vzory (regulární výrazy), podle kterých se pozná typ jedné hodnoty.
+# [0-9] = jedna číslice, + = jednou nebo víckrát, * = nula nebo víckrát,
+# ? = nepovinné, [+-] = znaménko, [.,] = desetinná tečka nebo česká čárka.
+CELE_CISLO = re.compile(r"[+-]?[0-9]+")                  # 42, -7, +3
+DESETINNE_CISLO = re.compile(r"[+-]?[0-9]*[.,]?[0-9]+")  # 3.14, -0,5, .5 (i celé číslo)
+DATUM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")        # 2024-03-15
 
-    Postup:
-      1. Text rozdělí na jednotlivé „tokeny“ podle mezer, středníků, čárek
-         a nových řádků.
-      2. Pokud všechny tokeny vypadají jako datum RRRR-MM-DD, převede je
-         na pořadová čísla dnů.
-      3. Jinak je převede na čísla; když jsou všechna celá, vrátí typ
-         "integer", jinak "float".
+# Věta pro uživatele: PROČ aplikace zvolila daný typ (okno kontroly souboru)
+PROC_TYP = {
+    "integer": "Všechny hodnoty jsou celá čísla.",
+    "float": "Všechny hodnoty jsou čísla a aspoň jedno má desetinnou část.",
+    "date": "Všechny hodnoty jsou data ve tvaru RRRR-MM-DD.",
+    "text": "Hodnoty nejsou jen čísla ani data, budou se proto řadit abecedně jako text.",
+}
+
+# Text se řadí podle české abecedy: č je až za c, ř za r, š za s, ž za z.
+# Znak "￿" je větší než všechna písmena, takže "c￿" (= č) se
+# zařadí za všechna slova na c, ale pořád před d. Čárky a kroužky
+# (á, é, ů …) pořadí nemění – á se řadí jako a. Spřežku ch pro
+# jednoduchost řadíme jako c + h.
+CESKA_ABECEDA = str.maketrans({
+    "á": "a", "č": "c￿", "ď": "d", "é": "e", "ě": "e", "í": "i", "ň": "n",
+    "ó": "o", "ř": "r￿", "š": "s￿", "ť": "t", "ú": "u", "ů": "u",
+    "ý": "y", "ž": "z￿",
+})
+
+
+def text_na_hodnotu(t):
+    """Text uložíme jako dvojici (klíč pro řazení, původní text).
+
+    Podobně jako u dat: algoritmy porovnávají dvojice a Python dvojice
+    porovná nejdřív podle prvního prvku – klíče. Klíč je malými písmeny
+    a upravený podle české abecedy, takže "Adam" i "adam" stojí vedle
+    sebe a "čaj" je až za "cukr". Při stejném klíči rozhodne původní text.
+    Zobrazuje se vždy jen původní text (druhý prvek dvojice).
     """
-    # [\s;,]+ = jedna nebo víc mezer/tabulátorů/nových řádků, středníků nebo čárek.
-    # Podmínka `if t` vyhodí prázdné řetězce (např. na začátku textu).
-    tokeny = [t for t in re.split(r"[\s;,]+", text) if t]
-    if not tokeny:
-        raise ValueError("Nebyly zadány žádné hodnoty.")
-    if len(tokeny) > MAX_PRVKU:
-        raise ValueError("Maximálně 3 000 hodnot.")
+    return (t.casefold().translate(CESKA_ABECEDA), t)   # "Čaj" -> ("c￿aj", "Čaj")
 
-    # \d{4}-\d{2}-\d{2} = čtyři číslice, pomlčka, dvě číslice, pomlčka, dvě číslice
-    if all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", t) for t in tokeny):
+
+def rozpoznej_hodnoty(text):
+    """Zjistí, jaký typ dat text obsahuje (soubor i ruční vstup), a převede
+    ho na hodnoty. Vrátí (typ, hodnoty, upozorneni) – upozorneni je ""
+    nebo věta pro uživatele. Při chybě vyhodí ValueError s českou zprávou.
+
+    Typ se určí podle toho, čemu odpovídají VŠECHNY hodnoty:
+      1. všechny jsou data RRRR-MM-DD  -> "date"
+      2. všechny jsou celá čísla       -> "integer"
+      3. všechny jsou čísla            -> "float"
+      4. cokoli jiného                 -> "text"
+
+    Čísla a data se oddělují mezerou, středníkem nebo novým řádkem.
+    Text jen středníkem nebo novým řádkem, protože i jedna hodnota
+    může obsahovat mezeru (např. „Jan Novák“).
+    """
+    # [\s;]+ = jedna nebo víc mezer/tabulátorů/nových řádků nebo středníků.
+    # Podmínka `if t` vyhodí prázdné řetězce (např. na začátku textu).
+    tokeny = [t for t in re.split(r"[\s;]+", text) if t]
+    if not tokeny:
+        raise ValueError("Nebyly nalezeny žádné hodnoty.")
+
+    upozorneni = ""
+    if all(DATUM.fullmatch(t) for t in tokeny):
         try:
-            return "date", [datetime.date.fromisoformat(t).toordinal() for t in tokeny]
+            # Data ukládáme jako pořadové číslo dne (viz začátek této části)
+            typ, hodnoty = "date", [datetime.date.fromisoformat(t).toordinal() for t in tokeny]
         except ValueError:
             # tvar sedí, ale datum neexistuje (např. 2024-02-31)
             raise ValueError("Vstup obsahuje neplatné datum.") from None
-
-    try:
-        cisla = [float(t) for t in tokeny]
-    except ValueError:
-        raise ValueError("Vstup obsahuje hodnotu, které nerozumím (očekávám čísla "
-                         "nebo data ve tvaru RRRR-MM-DD).") from None
-    # float() přijme i "inf" a "nan" – ty se ale nedají smysluplně třídit
-    if not all(math.isfinite(c) for c in cisla):
-        raise ValueError("Vstup obsahuje nekonečno nebo NaN.")
-    if all(c.is_integer() for c in cisla):
-        return "integer", [int(c) for c in cisla]     # 12.0 -> 12
-    return "float", cisla
-
-
-def nacti_txt(cesta):
-    """Načte celá čísla z textového souboru .txt, který vybral uživatel.
-    Vrátí seznam čísel, při chybě vyhodí ValueError s českou zprávou.
-
-    Čísla v souboru můžou být oddělená novým řádkem, mezerou, čárkou
-    nebo středníkem, např.:
-
-        42
-        -7 15 3
-        1000
-
-    Soubor čteme po řádcích, aby chybová zpráva řekla, NA KTERÉM řádku
-    je problém (např. Řádek 3: „abc“ není celé číslo.).
-    """
-    cisla = []
-    # utf-8-sig zvládne i soubory s neviditelnou značkou BOM na začátku
-    # (ukládá ji např. Poznámkový blok ve Windows)
-    with open(cesta, encoding="utf-8-sig") as f:
-        # enumerate(f, start=1) dává dvojice (číslo řádku, text řádku)
-        for cislo_radku, radek in enumerate(f, start=1):
-            for token in re.split(r"[\s;,]+", radek):
-                if not token:            # prázdný kus (prázdný řádek, mezera na konci)
-                    continue
-                try:
-                    cisla.append(int(token))     # "42" -> 42, "-7" -> -7
-                except ValueError:
-                    # int() odmítne "abc" i "3.5" – soubor má obsahovat jen celá čísla
-                    raise ValueError(f"Řádek {cislo_radku}: „{token}“ není celé číslo.") from None
-    if not cisla:
-        raise ValueError("Soubor neobsahuje žádná čísla.")
-    if len(cisla) > MAX_PRVKU:
-        raise ValueError(f"Soubor má {cesky_pocet(len(cisla))} čísel, maximum je 3 000.")
-    return cisla
+    elif all(CELE_CISLO.fullmatch(t) for t in tokeny):
+        typ, hodnoty = "integer", [int(t) for t in tokeny]                      # "42" -> 42
+    elif all(DESETINNE_CISLO.fullmatch(t) for t in tokeny):
+        # float() zná jen desetinnou tečku, českou čárku proto nejdřív nahradíme
+        typ, hodnoty = "float", [float(t.replace(",", ".")) for t in tokeny]    # "3,5" -> 3.5
+    else:
+        typ = "text"
+        # [\n;] = nový řádek nebo středník; strip() ořízne mezery na krajích
+        hodnoty = [text_na_hodnotu(t.strip()) for t in re.split(r"[\n;]", text) if t.strip()]
+        # Jsou-li mezi hodnotami i čísla nebo data, uživatele upozorníme:
+        # text se řadí znak po znaku, takže čísla vyjdou jinak, než čeká.
+        if any(DESETINNE_CISLO.fullmatch(t) or DATUM.fullmatch(t) for t in tokeny):
+            upozorneni = ("Mezi hodnotami jsou čísla nebo data i text. Vše se proto bude "
+                          "řadit jako text, znak po znaku – např. 10 bude před 9.")
+    if len(hodnoty) > MAX_PRVKU:
+        raise ValueError(f"Hodnot je {cesky_pocet(len(hodnoty))}, maximum je 3 000.")
+    return typ, hodnoty, upozorneni
 
 
 def formatuj_hodnotu(v, typ):
     """Převede uloženou hodnotu na text pro zobrazení v okně."""
     if typ == "date":
         return datetime.date.fromordinal(v).isoformat()   # 735964 -> "2016-01-01"
-    if typ == "float":
-        return f"{v:.2f}"                                  # vždy dvě desetinná místa
+    if typ == "text":
+        return v[1]                                        # (klíč, "Čaj") -> "Čaj"
+    # Čísla: str() vypíše přesně to, co je uložené (12.125 -> "12.125"),
+    # takže uživatel při kontrole souboru vidí všechna desetinná místa.
     return str(v)
 
 
@@ -355,7 +371,7 @@ def cesky_pocet(n):
 
 def popis_typu(typ):
     """Krátký český popis typu dat pro informační čip."""
-    return {"date": "data", "float": "desetinná čísla"}.get(typ, "celá čísla")
+    return {"date": "data", "float": "desetinná čísla", "text": "text"}.get(typ, "celá čísla")
 
 
 # ---------------------------------------------------------------------------
@@ -766,8 +782,130 @@ class Posuvnik(tk.Canvas):
 
 
 # ---------------------------------------------------------------------------
-# 5) Okno animace
+# 5) Modální okna: společný základ, kontrola souboru, animace
 # ---------------------------------------------------------------------------
+
+class Dialog(tk.Toplevel):
+    """Společný základ modálních oken (OknoKontroly, OknoAnimace).
+
+    tk.Toplevel = samostatné okno nad hlavním oknem.
+    Modální = dokud je okno otevřené, hlavní okno nejde ovládat.
+    Okno se otevře uprostřed hlavního okna, Esc i křížek ho zavřou.
+    Podtřída do self.fokus uloží prvek, který má po otevření dostat fokus.
+    """
+
+    def __init__(self, app, titulek, sirka, vyska):
+        super().__init__(app.root, bg=BARVY["surface"])
+        self.app = app
+        self.fokus = None
+        self.title(titulek)
+        self.transient(app.root)                  # okno patří k hlavnímu oknu (je nad ním)
+        self.geometry(self._stred(sirka, vyska))  # velikost a poloha uprostřed hlavního okna
+        self.bind("<Escape>", lambda e: self.zavri())
+        # Křížek v liště okna má zavolat naši funkci zavri
+        self.protocol("WM_DELETE_WINDOW", self.zavri)
+        self.after(100, self._modalni)
+
+    def _modalni(self):
+        # grab_set() pošle všechny kliky jen do tohoto okna -> hlavní okno počká
+        try:
+            self.grab_set()
+        except tk.TclError:             # okno ještě není zobrazené – zkusit znovu
+            self.after(100, self._modalni)
+            return
+        if self.fokus:
+            self.fokus.focus_set()
+
+    def _stred(self, w, h):
+        """Vrátí geometrii "ŠxV+X+Y", aby okno leželo uprostřed hlavního okna."""
+        r = self.app.root
+        x = r.winfo_rootx() + max(0, (r.winfo_width() - w) // 2)
+        y = r.winfo_rooty() + max(0, (r.winfo_height() - h) // 2)
+        return f"{w}x{h}+{x}+{y}"
+
+    def zavri(self):
+        """Zavře okno, uvolní modalitu a vrátí fokus hlavnímu oknu."""
+        self.grab_release()
+        self.destroy()
+        self.app.root.focus_set()
+
+
+class OknoKontroly(Dialog):
+    """Kontrola načteného souboru: ukáže rozpoznaný typ dat a všechny
+    hodnoty a zeptá se, jestli je chce uživatel takto třídit.
+
+      Ano, třídit         -> data se předají hlavnímu oknu (_nastav_data)
+      Vybrat jiný soubor  -> znovu se otevře výběr souboru
+      Zrušit / Esc        -> okno se zavře, původní data zůstanou
+    """
+
+    def __init__(self, app, soubor, typ, hodnoty, upozorneni):
+        super().__init__(app, "Kontrola načtených dat", 720, 580)
+        self.soubor, self.typ, self.hodnoty = soubor, typ, hodnoty
+        self.minsize(600, 520)
+        obal = tk.Frame(self, bg=BARVY["surface"])
+        obal.pack(fill="both", expand=True, padx=36, pady=28)
+
+        # --- hlavička: odkud data jsou, jaký typ jsme poznali a proč ---
+        tk.Label(obal, text=f"Rozpoznaný typ dat · {soubor}", font=PISMO["small"],
+                 fg=BARVY["text3"], bg=BARVY["surface"], anchor="w").pack(fill="x")
+        tk.Label(obal, text=popis_typu(typ).capitalize(), font=PISMO["dialog_title"],
+                 fg=BARVY["text"], bg=BARVY["surface"], anchor="w").pack(fill="x")
+        tk.Label(obal, text=PROC_TYP[typ], font=PISMO["body"], fg=BARVY["text2"],
+                 bg=BARVY["surface"], anchor="w", justify="left",
+                 wraplength=640).pack(fill="x", pady=(2, 12))
+
+        # --- čipy: počet hodnot a rozsah (u textu jen počet) ---
+        cipy = tk.Frame(obal, bg=BARVY["surface"])
+        cipy.pack(fill="x")
+        cip(cipy, f"{cesky_pocet(len(hodnoty))} hodnot").pack(side="left", padx=(0, 6))
+        if typ != "text":
+            # min()/max() jen pro informaci v okně – netřídí se tím
+            cip(cipy, f"od {formatuj_hodnotu(min(hodnoty), typ)} "
+                      f"do {formatuj_hodnotu(max(hodnoty), typ)}").pack(side="left")
+
+        # --- žluté upozornění, když data míchají čísla a text ---
+        if upozorneni:
+            tk.Label(obal, text=upozorneni, font=PISMO["small"], fg=BARVY["yellow"],
+                     bg=BARVY["yellow_bg"], anchor="w", justify="left", wraplength=620,
+                     padx=14, pady=10).pack(fill="x", pady=(14, 0))
+
+        # --- všechny načtené hodnoty v pořadí ze souboru ---
+        tk.Label(obal, text="Načtené hodnoty", font=PISMO["bold"], fg=BARVY["text"],
+                 bg=BARVY["surface"], anchor="w").pack(fill="x", pady=(18, 6))
+        # Tlačítka balíme dřív než seznam se side="bottom": když se okno
+        # zmenší, zmenší se seznam a tlačítka zůstanou vidět.
+        tlacitka = tk.Frame(obal, bg=BARVY["surface"])
+        tlacitka.pack(side="bottom", fill="x")
+        tk.Label(obal, text=f"Chcete třídit tyto hodnoty jako {popis_typu(typ)}?",
+                 font=PISMO["bold"], fg=BARVY["text"], bg=BARVY["surface"],
+                 anchor="w").pack(side="bottom", fill="x", pady=(18, 12))
+        seznam = SeznamHodnot(obal, vyska=8)
+        seznam.pack(fill="both", expand=True)
+        seznam.zobraz(hodnoty, typ)
+
+        # Tlačítka vytvoříme v pořadí zleva doprava (tak mezi nimi skáče Tab),
+        # ale „Ano“ zabalíme jako první se side="right", aby bylo úplně vpravo.
+        zrusit = Tlacitko(tlacitka, "Zrušit", self.zavri, "ghost")
+        jiny = Tlacitko(tlacitka, "Vybrat jiný soubor", self.jiny_soubor)
+        ano = Tlacitko(tlacitka, "Ano, třídit", self.potvrd, "primary")
+        zrusit.pack(side="left")
+        ano.pack(side="right")
+        jiny.pack(side="right", padx=8)
+        self.bind("<Return>", lambda e: self.potvrd())   # Enter = Ano
+        self.fokus = ano
+
+    def potvrd(self):
+        """Ano – data se použijí v hlavním okně."""
+        self.zavri()
+        self.app._nastav_data(self.hodnoty, self.typ, self.soubor)
+
+    def jiny_soubor(self):
+        """Uživatel načetl něco jiného, než chtěl – znovu výběr souboru."""
+        self.zavri()
+        self.app.nacti_soubor()
+
+
 # Animace nic netřídí sama. Algoritmus ze sort.py při třídění zapisuje každý
 # krok do seznamu `kroky` (= self.snimky). Jeden snímek je slovník:
 #   "pole"    – stav pole v tom okamžiku
@@ -776,21 +914,15 @@ class Posuvnik(tk.Canvas):
 #   "zprava"  – česky popsaný krok („Porovnávám prvek s pivotem.“)
 # Okno jen tyto snímky postupně kreslí jako sloupcový graf.
 
-class OknoAnimace(tk.Toplevel):
-    """Přehrává kroky, které zaznamenal algoritmus v sort.py (parametr `kroky`).
-
-    tk.Toplevel = samostatné okno nad hlavním oknem.
-    """
+class OknoAnimace(Dialog):
+    """Přehrává kroky, které zaznamenal algoritmus v sort.py (parametr `kroky`)."""
 
     def __init__(self, app, info, snimky, typ, poznamka):
-        super().__init__(app.root, bg=BARVY["surface"])
-        self.app, self.snimky, self.typ = app, snimky, typ
+        super().__init__(app, info["nazev"], 1040, 820)
+        self.snimky, self.typ = snimky, typ
         # index = číslo právě zobrazeného snímku, hraje = běží přehrávání,
         # casovac = identifikátor naplánovaného after() (kvůli zrušení)
         self.index, self.hraje, self.casovac = 0, False, None
-        self.title(info["nazev"])
-        self.transient(app.root)               # okno patří k hlavnímu oknu (je nad ním)
-        self.geometry(self._stred(1040, 820))  # velikost a poloha uprostřed hlavního okna
         self.minsize(820, 760)
 
         obal = tk.Frame(self, bg=BARVY["surface"])
@@ -889,29 +1021,9 @@ class OknoAnimace(tk.Toplevel):
         self.bind("<space>", lambda e: self.prepni_prehravani())
         self.bind("<Right>", lambda e: (self.zastav(), self.krok(1)))
         self.bind("<Left>", lambda e: (self.zastav(), self.krok(-1)))
-        self.bind("<Escape>", lambda e: self.zavri())
-        # Křížek v liště okna má zavolat naši funkci zavri (zastaví časovač)
-        self.protocol("WM_DELETE_WINDOW", self.zavri)
+        self.fokus = self.btn_play       # po otevření (Dialog._modalni) dostane fokus Přehrát
 
         self._vykresli()
-        self.after(100, self._modalni)
-
-    def _modalni(self):
-        # okno je modální – hlavní okno počká, dokud se animace nezavře
-        # grab_set() pošle všechny kliky jen do tohoto okna
-        try:
-            self.grab_set()
-        except tk.TclError:             # okno ještě není zobrazené – zkusit znovu
-            self.after(100, self._modalni)
-            return
-        self.btn_play.focus_set()
-
-    def _stred(self, w, h):
-        """Vrátí geometrii "ŠxV+X+Y", aby okno leželo uprostřed hlavního okna."""
-        r = self.app.root
-        x = r.winfo_rootx() + max(0, (r.winfo_width() - w) // 2)
-        y = r.winfo_rooty() + max(0, (r.winfo_height() - h) // 2)
-        return f"{w}x{h}+{x}+{y}"
 
     # --- vykreslení jednoho snímku -------------------------------------------------
     def _vykresli(self):
@@ -1013,11 +1125,9 @@ class OknoAnimace(tk.Toplevel):
         self.lbl_rychlost.config(text=f"{hodnota} kroků/s")
 
     def zavri(self):
-        """Zavře okno: zastaví časovač, uvolní modalitu a vrátí fokus."""
+        """Zavře okno: zastaví časovač a pak zavře okno jako každý Dialog."""
         self.zastav()
-        self.grab_release()
-        self.destroy()
-        self.app.root.focus_set()
+        super().zavri()
 
 
 # ---------------------------------------------------------------------------
@@ -1268,7 +1378,7 @@ class SortApp:
         self.txt_rucne.pack(fill="x")
         radek = tk.Frame(o, bg=BARVY["surface"])
         radek.pack(fill="x", pady=(8, 14))
-        tk.Label(radek, text="Oddělte mezerou, středníkem nebo novým řádkem.",
+        tk.Label(radek, text="Oddělte středníkem nebo novým řádkem (čísla i mezerou).",
                  font=PISMO["tiny"], fg=BARVY["text3"], bg=BARVY["surface"]).pack(side="left")
         Tlacitko(radek, "Použít", self.pouzij_rucne, padx=14, pady=4).pack(side="right")
 
@@ -1388,7 +1498,7 @@ class SortApp:
         self.btn_export = Tlacitko(spodek, "Export CSV", self.export_csv, padx=12, pady=4)
         self.btn_export.pack(side="right")
         # zobrazí se až po dokončeném měření (_konec_mereni)
-        self.btn_jdi_serazeno = Tlacitko(spodek, "Zobrazit seřazená čísla",
+        self.btn_jdi_serazeno = Tlacitko(spodek, "Zobrazit seřazené hodnoty",
                                          lambda: self.zalozky.vyber(2), "ghost", padx=12, pady=4)
 
         # záložky až nakonec – při vytvoření hned přepnou na první panel
@@ -1488,22 +1598,30 @@ class SortApp:
                           f"{nazev.split(' – ')[0].lower()}, seed {seed}")
 
     def nacti_soubor(self):
-        """Tlačítko „Načíst .txt“ – uživatel vybere soubor s celými čísly."""
+        """Tlačítko „Načíst .txt“ – uživatel vybere textový soubor.
+
+        Aplikace rozpozná typ dat (rozpoznej_hodnoty) a v okně kontroly
+        (OknoKontroly) se zeptá, jestli je chce uživatel takto třídit.
+        Data se použijí až po kliknutí na „Ano, třídit“.
+        """
         # Systémové okno pro výběr souboru. Vrátí cestu k souboru, nebo
         # prázdný řetězec, když ho uživatel zavře. filetypes = jen soubory .txt
         cesta = filedialog.askopenfilename(
-            title="Načíst čísla ze souboru", filetypes=[("Textový soubor", "*.txt")])
+            title="Načíst data ze souboru", filetypes=[("Textový soubor", "*.txt")])
         if not cesta:                    # uživatel dialog zavřel bez výběru
             return
         try:
-            hodnoty = nacti_txt(cesta)
+            # utf-8-sig zvládne i soubory s neviditelnou značkou BOM na začátku
+            # (ukládá ji např. Poznámkový blok ve Windows)
+            with open(cesta, encoding="utf-8-sig") as f:
+                typ, hodnoty, upozorneni = rozpoznej_hodnoty(f.read())
         # UnicodeDecodeError je podtřída ValueError, proto musí být zachycena dřív
         except (OSError, UnicodeDecodeError):
             chyba = "Soubor se nepodařilo přečíst (není to textový soubor?)."
-        except ValueError as e:          # chybná data – zpráva z nacti_txt
+        except ValueError as e:          # chybná data – zpráva z rozpoznej_hodnoty
             chyba = str(e)
         else:
-            self._nastav_data(hodnoty, "integer", cesta.rsplit("/", 1)[-1])   # jen název souboru
+            OknoKontroly(self, cesta.rsplit("/", 1)[-1], typ, hodnoty, upozorneni)  # jen název souboru
             return
         # Stavový řádek je až dole pod výsledky, chybu proto ukážeme v okně
         messagebox.showerror("Soubor nejde načíst", chyba, parent=self.root)
@@ -1512,12 +1630,15 @@ class SortApp:
         """Tlačítko „Použít“ u ručního vstupu."""
         try:
             # "1.0" až "end" = celý obsah textového pole
-            typ, hodnoty = nacti_hodnoty(self.txt_rucne.get("1.0", "end"))
+            typ, hodnoty, upozorneni = rozpoznej_hodnoty(self.txt_rucne.get("1.0", "end"))
         except ValueError as chyba:
             self.stav(str(chyba))
             self.txt_rucne.focus_set()   # kurzor zpět do pole, ať jde chyba hned opravit
             return
+        # Rozpoznaný typ uvidí uživatel v čipu pod polem (např. „celá čísla“)
         self._nastav_data(hodnoty, typ, "ruční vstup")
+        if upozorneni:
+            self.stav(upozorneni)
 
     def _nastav_data(self, hodnoty, typ, zdroj):
         """Společný konec všech tří způsobů přípravy dat.
@@ -1772,7 +1893,7 @@ class SortApp:
                          daemon=True).start()
 
     def _zobraz_serazeno(self, klic, pole, ok):
-        """Vypíše seřazená čísla (zpráva „serazeno“ z fronty)."""
+        """Vypíše seřazené hodnoty (zpráva „serazeno“ z fronty)."""
         self.serazeno = {"klic": klic, "pole": pole, "ok": ok}
         for w in self.info_serazeno.winfo_children():
             w.destroy()
@@ -1785,16 +1906,18 @@ class SortApp:
             cip(self.info_serazeno, text).pack(side="left", padx=(0, 6))
         self.seznam_serazeno.zobraz(pole, self.typ)
         self._obnov_tlacitka()
-        self.stav(f"Seřazená čísla ({INFO[klic]['nazev']}) jsou v záložce „Seřazeno“.")
+        self.stav(f"Seřazené hodnoty ({INFO[klic]['nazev']}) jsou v záložce „Seřazeno“.")
 
     def kopiruj_serazeno(self):
-        """Tlačítko „Kopírovat“ – seřazená čísla oddělená mezerou do schránky."""
+        """Tlačítko „Kopírovat“ – seřazené hodnoty do schránky.
+        Čísla a data oddělí mezerou, text novým řádkem (text může mít mezery)."""
         if not self.serazeno:
             return
+        oddelovac = "\n" if self.typ == "text" else " "
         self.root.clipboard_clear()
-        self.root.clipboard_append(" ".join(formatuj_hodnotu(v, self.typ)
-                                            for v in self.serazeno["pole"]))
-        self.stav("Seřazená čísla jsou zkopírovaná do schránky.")
+        self.root.clipboard_append(oddelovac.join(formatuj_hodnotu(v, self.typ)
+                                                  for v in self.serazeno["pole"]))
+        self.stav("Seřazené hodnoty jsou zkopírované do schránky.")
 
     # --- export a animace ----------------------------------------------------------
     def export_csv(self):
